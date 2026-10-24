@@ -119,7 +119,10 @@ QString Backend::normalizedLinkUrl(const QString &clipboardText) {
     return url.toString();
 }
 
-Backend::Backend(QObject *parent) : QObject(parent) {
+Backend::Backend(QObject *parent) : Backend(QString(), parent) {}
+
+Backend::Backend(const QString &configPath, QObject *parent)
+    : QObject(parent), m_explicitConfigPath(configPath) {
     // A settings file truncated by a crash reads back as an empty value, and
     // both that and a NaN would clamp to the smallest size rather than fall
     // back to the default.
@@ -200,6 +203,199 @@ Backend::~Backend() = default;
 
 void Backend::setParentWindow(QWindow *window) {
     m_parentWindow = window;
+}
+
+void Backend::setConfigPath(const QString &configPath) {
+    if (m_explicitConfigPath == configPath)
+        return;
+
+    m_explicitConfigPath = configPath;
+    m_lastConfigFont.clear();
+    m_lastConfigZoom.clear();
+    loadOmarchyTheme();
+    watchOmarchyTheme();
+}
+
+QString Backend::defaultConfigPath() {
+    const QByteArray xdgConfigHome = qgetenv("XDG_CONFIG_HOME");
+    const QString baseDir = !xdgConfigHome.isEmpty()
+        ? QString::fromLocal8Bit(xdgConfigHome)
+        : QDir::homePath() + QStringLiteral("/.config");
+    return QDir(baseDir).filePath(QStringLiteral("omawrite/omawrite.toml"));
+}
+
+QString Backend::generateSystemConfigToml(bool systemDarkMode) {
+    const QString colorsPath = QDir::homePath()
+        + QStringLiteral("/.local/state/omarchy/current/theme/colors.toml");
+
+    QString themeMode;
+    QString background;
+    QString foreground;
+    QString accent;
+    QString selection;
+    QString selectionBackground;
+    QString selectionForeground;
+    QString brightForeground;
+    QString lighterBackground;
+
+    QFile file(colorsPath);
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&file);
+        while (!in.atEnd()) {
+            const QString line = in.readLine().trimmed();
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#'))
+                    || line.startsWith(QLatin1Char('[')))
+                continue;
+
+            const int equals = line.indexOf(QLatin1Char('='));
+            if (equals < 0)
+                continue;
+
+            const QString key = line.left(equals).trimmed();
+            const QString value = tomlValue(line.mid(equals + 1));
+
+            if (key == QStringLiteral("mode"))
+                themeMode = value;
+            else if (key == QStringLiteral("background"))
+                background = value;
+            else if (key == QStringLiteral("foreground"))
+                foreground = value;
+            else if (key == QStringLiteral("accent"))
+                accent = value;
+            else if (key == QStringLiteral("selection"))
+                selection = value;
+            else if (key == QStringLiteral("selection_background"))
+                selectionBackground = value;
+            else if (key == QStringLiteral("selection_foreground"))
+                selectionForeground = value;
+            else if (key == QStringLiteral("bright_foreground"))
+                brightForeground = value;
+            else if (key == QStringLiteral("lighter_background"))
+                lighterBackground = value;
+        }
+    }
+
+    bool darkMode = systemDarkMode;
+    if (themeMode == QStringLiteral("dark")) {
+        darkMode = true;
+    } else if (themeMode == QStringLiteral("light")) {
+        darkMode = false;
+    } else {
+        const QColor parsedBackground(background);
+        if (parsedBackground.isValid()) {
+            const double luminance = 0.299 * parsedBackground.redF()
+                + 0.587 * parsedBackground.greenF() + 0.114 * parsedBackground.blueF();
+            darkMode = luminance < 0.5;
+        }
+    }
+
+    QString resolvedBackground = darkMode ? QStringLiteral("#101010") : QStringLiteral("#ffffff");
+    QString resolvedForeground = darkMode ? QStringLiteral("#eeeeee") : QStringLiteral("#222324");
+    QString resolvedAccent = darkMode ? QStringLiteral("#5584aa") : QStringLiteral("#2077b2");
+    QString resolvedSelection = darkMode ? QStringLiteral("#186a9a") : QStringLiteral("#2077b2");
+
+    const auto applyColor = [](QString &target, const QString &value) {
+        if (QColor(value).isValid())
+            target = value;
+    };
+    applyColor(resolvedBackground, background);
+    applyColor(resolvedForeground, foreground);
+    applyColor(resolvedAccent, accent);
+    applyColor(resolvedSelection, selectionBackground);
+    applyColor(resolvedSelection, selection);
+    QString resolvedSelectionForeground = resolvedForeground;
+    applyColor(resolvedSelectionForeground, brightForeground);
+    applyColor(resolvedSelectionForeground, selectionForeground);
+
+    const QColor page(resolvedBackground);
+    const QColor lighter(lighterBackground);
+    const QString resolvedCodeBackground = (lighter.isValid() && lighter != page
+                                                ? lighter
+                                                : blend(page, QColor(resolvedForeground), 0.06)).name();
+
+    bool zoomOk = false;
+    const qreal storedZoom = QSettings().value(textZoomSetting, 1.0).toDouble(&zoomOk);
+    const qreal zoom = zoomOk && storedZoom > 0
+        ? qBound(textZoomSteps[0], storedZoom, textZoomSteps[textZoomStepCount - 1])
+        : 1.0;
+
+    const QString savedFont = QSettings().value(editorFontSetting).toString();
+    const QString font = !savedFont.isEmpty() ? savedFont : defaultEditorFont();
+
+    QString escapedFont = font;
+    escapedFont.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    escapedFont.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+
+    return QStringLiteral(
+               "mode = \"%1\"\n"
+               "background = \"%2\"\n"
+               "foreground = \"%3\"\n"
+               "accent = \"%4\"\n"
+               "selection = \"%5\"\n"
+               "selection_foreground = \"%6\"\n"
+               "code_background = \"%7\"\n"
+               "\n"
+               "# background_image = \"\"\n"
+               "# background_opacity = 0.85\n"
+               "\n"
+               "font = \"%8\"\n"
+               "zoom = %9\n")
+        .arg(darkMode ? QStringLiteral("dark") : QStringLiteral("light"),
+             resolvedBackground,
+             resolvedForeground,
+             resolvedAccent,
+             resolvedSelection,
+             resolvedSelectionForeground,
+             resolvedCodeBackground,
+             escapedFont,
+             QString::number(zoom, 'g', 4));
+}
+
+int Backend::generateDefaultConfigFile(bool systemDarkMode, QString *outputMessage) {
+    const QFileInfo targetInfo(defaultConfigPath());
+    const QString absolutePath = targetInfo.absoluteFilePath();
+
+    const auto report = [outputMessage](int code, const QString &message) {
+        if (outputMessage)
+            *outputMessage = message;
+        QTextStream(code == 0 ? stdout : stderr) << message << QLatin1Char('\n');
+        return code;
+    };
+
+    if (targetInfo.exists()) {
+        return report(1, QStringLiteral("omawrite: configuration file already exists at %1")
+                             .arg(absolutePath));
+    }
+
+    if (!QDir().mkpath(targetInfo.dir().absolutePath())) {
+        return report(1, QStringLiteral("omawrite: could not create directory for %1")
+                             .arg(absolutePath));
+    }
+
+    QFile out(absolutePath);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::NewOnly | QIODevice::Text)) {
+        return report(1, QStringLiteral("omawrite: could not write configuration file at %1")
+                             .arg(absolutePath));
+    }
+
+    const QByteArray contents = generateSystemConfigToml(systemDarkMode).toUtf8();
+    if (out.write(contents) != qint64(contents.size()) || !out.flush()) {
+        out.close();
+        out.remove();
+        return report(1, QStringLiteral("omawrite: could not write configuration file at %1")
+                             .arg(absolutePath));
+    }
+
+    out.close();
+    return report(0, QStringLiteral("Generated configuration file at %1").arg(absolutePath));
+}
+
+QString Backend::activeConfigPath() const {
+    if (!m_explicitConfigPath.isEmpty())
+        return QFileInfo::exists(m_explicitConfigPath) ? m_explicitConfigPath : QString();
+
+    const QString candidate = defaultConfigPath();
+    return QFileInfo::exists(candidate) ? candidate : QString();
 }
 
 QString Backend::fileName() const {
@@ -455,8 +651,11 @@ void Backend::printDocument() {
 }
 
 void Backend::newWindow() {
+    QStringList args;
+    if (!m_explicitConfigPath.isEmpty())
+        args << QStringLiteral("--config") << m_explicitConfigPath;
     const bool started = QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                                                 QStringList());
+                                                 args);
     if (!started)
         setStatus(QStringLiteral("Could not open a new window."));
 }
@@ -1058,16 +1257,24 @@ QString Backend::tomlValue(const QString &text) {
         return value;
 
     const QChar quote = value.front();
-    if (quote != QLatin1Char('"') && quote != QLatin1Char('\''))
+    if (quote != QLatin1Char('"') && quote != QLatin1Char('\'')) {
+        const int comment = value.indexOf(QLatin1Char('#'));
+        if (comment > 0 && value.at(comment - 1).isSpace())
+            return value.left(comment).trimmed();
         return value;
+    }
 
     const int close = value.indexOf(quote, 1);
     return close < 0 ? value : value.mid(1, close - 1);
 }
 
 void Backend::loadOmarchyTheme() {
-    const QString colorsPath = QDir::homePath()
-        + QStringLiteral("/.local/state/omarchy/current/theme/colors.toml");
+    const QString customConfig = activeConfigPath();
+    const bool usingCustomConfig = !customConfig.isEmpty();
+    const QString colorsPath = usingCustomConfig
+        ? customConfig
+        : QDir::homePath() + QStringLiteral("/.local/state/omarchy/current/theme/colors.toml");
+
     QString themeMode;
     QString background;
     QString foreground;
@@ -1077,12 +1284,19 @@ void Backend::loadOmarchyTheme() {
     QString selectionForeground;
     QString brightForeground;
     QString lighterBackground;
+    QString codeBackground;
+    QString backgroundImagePath;
+    QString backgroundOpacityValue;
+    QString fontValue;
+    QString zoomValue;
+
     QFile file(colorsPath);
     if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         QTextStream in(&file);
         while (!in.atEnd()) {
             const QString line = in.readLine().trimmed();
-            if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#'))
+                    || line.startsWith(QLatin1Char('[')))
                 continue;
 
             const int equals = line.indexOf(QLatin1Char('='));
@@ -1110,6 +1324,18 @@ void Backend::loadOmarchyTheme() {
                 brightForeground = value;
             else if (key == QStringLiteral("lighter_background"))
                 lighterBackground = value;
+            else if (usingCustomConfig && key == QStringLiteral("code_background"))
+                codeBackground = value;
+            else if (usingCustomConfig && key == QStringLiteral("background_image"))
+                backgroundImagePath = value;
+            else if (usingCustomConfig && key == QStringLiteral("background_opacity"))
+                backgroundOpacityValue = value;
+            else if (usingCustomConfig
+                     && (key == QStringLiteral("font") || key == QStringLiteral("editor_font")))
+                fontValue = value;
+            else if (usingCustomConfig
+                     && (key == QStringLiteral("zoom") || key == QStringLiteral("text_scale")))
+                zoomValue = value;
         }
     }
 
@@ -1117,6 +1343,8 @@ void Backend::loadOmarchyTheme() {
     const QStringList previousColors{m_themeBackground, m_themeForeground, m_themeAccent,
                                      m_themeSelection, m_themeSelectionForeground,
                                      m_themeCodeBackground};
+    const QUrl previousBackgroundImage = m_backgroundImage;
+    const qreal previousBackgroundOpacity = m_backgroundOpacity;
 
     bool themeIsDark = m_systemDarkMode;
     if (themeMode == QStringLiteral("dark")) {
@@ -1161,10 +1389,80 @@ void Backend::loadOmarchyTheme() {
     // panel at all: mix a shade of the page towards the text for those. Mixing,
     // unlike lightening, still moves on a pure black background.
     const QColor page(m_themeBackground);
-    const QColor lighter(lighterBackground);
-    m_themeCodeBackground = (lighter.isValid() && lighter != page
-                                 ? lighter
+    const QColor chosenCodeColor(!codeBackground.isEmpty() ? codeBackground : lighterBackground);
+    m_themeCodeBackground = (chosenCodeColor.isValid() && chosenCodeColor != page
+                                 ? chosenCodeColor
                                  : blend(page, QColor(m_themeForeground), 0.06)).name();
+
+    QUrl resolvedImage;
+    if (usingCustomConfig && !backgroundImagePath.isEmpty()) {
+        QString expanded = backgroundImagePath;
+        if (expanded == QStringLiteral("~"))
+            expanded = QDir::homePath();
+        else if (expanded.startsWith(QStringLiteral("~/")))
+            expanded = QDir::homePath() + expanded.mid(1);
+        else if (QDir::isRelativePath(expanded))
+            expanded = QFileInfo(customConfig).dir().filePath(expanded);
+
+        const QFileInfo imageInfo(expanded);
+        if (imageInfo.exists() && imageInfo.isFile())
+            resolvedImage = QUrl::fromLocalFile(imageInfo.absoluteFilePath());
+    }
+    m_backgroundImage = resolvedImage;
+
+    qreal resolvedOpacity = 0.85;
+    if (usingCustomConfig && !backgroundOpacityValue.isEmpty()) {
+        bool ok = false;
+        QString numText = backgroundOpacityValue.trimmed();
+        const bool isPercent = numText.endsWith(QLatin1Char('%'));
+        if (isPercent)
+            numText.chop(1);
+        qreal parsed = numText.trimmed().toDouble(&ok);
+        if (ok) {
+            if (isPercent)
+                parsed /= 100.0;
+            resolvedOpacity = qBound(0.0, parsed, 1.0);
+        }
+    }
+    m_backgroundOpacity = resolvedOpacity;
+
+    if (usingCustomConfig) {
+        if (!fontValue.isEmpty() && fontValue != m_lastConfigFont) {
+            m_lastConfigFont = fontValue;
+            if (QFontDatabase::hasFamily(fontValue))
+                setEditorFont(fontValue);
+        } else if (fontValue.isEmpty()) {
+            m_lastConfigFont.clear();
+        }
+
+        if (!zoomValue.isEmpty() && zoomValue != m_lastConfigZoom) {
+            m_lastConfigZoom = zoomValue;
+            bool ok = false;
+            QString numText = zoomValue.trimmed();
+            const bool isPercent = numText.endsWith(QLatin1Char('%'));
+            if (isPercent)
+                numText.chop(1);
+            qreal parsed = numText.trimmed().toDouble(&ok);
+            if (ok) {
+                if (isPercent || parsed > 10.0)
+                    parsed /= 100.0;
+                if (parsed > 0.0) {
+                    const qreal clamped = qBound(textZoomSteps[0], parsed,
+                                                 textZoomSteps[textZoomStepCount - 1]);
+                    if (!qFuzzyCompare(m_textZoom, clamped)) {
+                        m_textZoom = clamped;
+                        QSettings().setValue(textZoomSetting, clamped);
+                        emit textScaleChanged();
+                    }
+                }
+            }
+        } else if (zoomValue.isEmpty()) {
+            m_lastConfigZoom.clear();
+        }
+    } else {
+        m_lastConfigFont.clear();
+        m_lastConfigZoom.clear();
+    }
 
     if (m_highlighter) {
         m_highlighter->setTheme(m_darkMode, m_themeBackground, m_themeForeground,
@@ -1178,12 +1476,40 @@ void Backend::loadOmarchyTheme() {
                              m_themeCodeBackground};
     if (colors != previousColors)
         emit themeColorsChanged();
+    if (m_backgroundImage != previousBackgroundImage
+            || !qFuzzyCompare(m_backgroundOpacity, previousBackgroundOpacity)) {
+        emit backgroundImageChanged();
+    }
 }
 
 void Backend::watchOmarchyTheme() {
     const QStringList watched = m_themeWatcher.files() + m_themeWatcher.directories();
     if (!watched.isEmpty())
         m_themeWatcher.removePaths(watched);
+
+    const auto watchPathAndParents = [this](const QString &filePath) {
+        if (filePath.isEmpty())
+            return;
+        const QFileInfo info(filePath);
+        if (info.exists())
+            m_themeWatcher.addPath(info.absoluteFilePath());
+        QDir dir = info.dir();
+        for (int depth = 0; depth < 3; ++depth) {
+            if (dir.exists()) {
+                m_themeWatcher.addPath(dir.absolutePath());
+                break;
+            }
+            if (!dir.cdUp())
+                break;
+        }
+    };
+
+    if (!m_explicitConfigPath.isEmpty()) {
+        watchPathAndParents(m_explicitConfigPath);
+        return;
+    }
+
+    watchPathAndParents(defaultConfigPath());
 
     const QString currentDir = QDir::homePath()
         + QStringLiteral("/.local/state/omarchy/current");

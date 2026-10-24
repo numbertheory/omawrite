@@ -32,14 +32,23 @@ class Backend : public QObject {
     Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeSelection READ themeSelection NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeSelectionForeground READ themeSelectionForeground NOTIFY themeColorsChanged)
+    Q_PROPERTY(QUrl backgroundImage READ backgroundImage NOTIFY backgroundImageChanged)
+    Q_PROPERTY(qreal backgroundOpacity READ backgroundOpacity NOTIFY backgroundImageChanged)
     Q_PROPERTY(QString editorFont READ editorFont WRITE setEditorFont NOTIFY editorFontChanged)
     Q_PROPERTY(QStringList availableFonts READ availableFonts CONSTANT)
 
 public:
     explicit Backend(QObject *parent = nullptr);
+    explicit Backend(const QString &configPath, QObject *parent = nullptr);
     ~Backend() override;
 
     void setParentWindow(QWindow *window);
+    void setConfigPath(const QString &configPath);
+    QString configPath() const { return m_explicitConfigPath; }
+    static QString defaultConfigPath();
+    static QString generateSystemConfigToml(bool systemDarkMode = true);
+    static int generateDefaultConfigFile(bool systemDarkMode = true,
+                                         QString *outputMessage = nullptr);
 
     QUrl fileUrl() const { return m_fileUrl; }
     QString fileName() const;
@@ -58,6 +67,8 @@ public:
     QString themeSelection() const { return m_themeSelection; }
     QString themeCodeBackground() const { return m_themeCodeBackground; }
     QString themeSelectionForeground() const { return m_themeSelectionForeground; }
+    QUrl backgroundImage() const { return m_backgroundImage; }
+    qreal backgroundOpacity() const { return m_backgroundOpacity; }
     QString editorFont() const { return m_editorFont; }
     void setEditorFont(const QString &family);
     QStringList availableFonts() const;
@@ -109,6 +120,7 @@ signals:
     void darkModeChanged();
     void textScaleChanged();
     void themeColorsChanged();
+    void backgroundImageChanged();
     void editorFontChanged();
     void saveFailed();
     void openDialogRequested();
@@ -147,6 +159,7 @@ private:
     void unwatchFiles();
     void watchCurrentFile();
     void checkWatchedFile();
+    QString activeConfigPath() const;
     void loadOmarchyTheme();
     void watchOmarchyTheme();
 
@@ -187,12 +200,17 @@ private:
     QString m_recoveryPath;
     std::unique_ptr<QLockFile> m_recoveryLock;
 
+    QString m_explicitConfigPath;
+    QString m_lastConfigFont;
+    QString m_lastConfigZoom;
     QString m_themeBackground;
     QString m_themeForeground;
     QString m_themeAccent;
     QString m_themeSelection;
     QString m_themeCodeBackground;
     QString m_themeSelectionForeground;
+    QUrl m_backgroundImage;
+    qreal m_backgroundOpacity = 0.85;
     QString m_editorFont;
     QFileSystemWatcher m_themeWatcher;
     QTimer m_themeReloadTimer;

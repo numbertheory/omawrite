@@ -55,6 +55,8 @@ private slots:
         QCoreApplication::setApplicationVersion(QStringLiteral("1.2.3-test"));
         QStandardPaths::setTestModeEnabled(true);
         QVERIFY(m_settingsDirectory.isValid());
+        // Isolate tests from any host XDG_CONFIG_HOME/omawrite/omawrite.toml.
+        qputenv("XDG_CONFIG_HOME", m_settingsDirectory.path().toUtf8());
         QQuickStyle::setStyle(QStringLiteral("Material"));
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
@@ -158,14 +160,16 @@ private slots:
 
     void answersHelpBeforeOpeningAWindow() {
         const QString usage = Cli::usage();
-        QVERIFY(usage.contains(QStringLiteral("omawrite [FILE]")));
+        QVERIFY(usage.contains(QStringLiteral("omawrite [OPTIONS] [FILE]")));
+        QVERIFY(usage.contains(QStringLiteral("-c, --config PATH")));
+        QVERIFY(usage.contains(QStringLiteral("-g, --generate")));
         QVERIFY(usage.contains(QStringLiteral("-h, --help")));
         QVERIFY(usage.contains(QStringLiteral("-v, --version")));
 
         const QString version = QStringLiteral("1.2.3");
-        const auto answer = [&](const QStringList &arguments) {
+        const auto answer = [&](const QStringList &arguments, Cli::Options *options = nullptr) {
             return Cli::handleArguments(QStringList{QStringLiteral("omawrite")} + arguments,
-                                        version);
+                                        version, options);
         };
         QCOMPARE(answer({QStringLiteral("--help")}), std::optional<int>(0));
         QCOMPARE(answer({QStringLiteral("-h")}), std::optional<int>(0));
@@ -3356,6 +3360,188 @@ private slots:
         QObject *keep = dialog->findChild<QObject *>(QStringLiteral("keepButton"));
         QVERIFY(keep);
         QTRY_VERIFY(keep->property("activeFocus").toBool());
+    }
+
+    void parsesConfigFlagAndFileFromCommandLine() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configFile = dir.filePath(QStringLiteral("custom.toml"));
+        writeFile(configFile, "mode = \"dark\"\n");
+
+        Cli::Options options;
+        QString error;
+        QCOMPARE(Cli::parseOptions(
+                     {QStringLiteral("omawrite"), QStringLiteral("-c"), configFile,
+                      QStringLiteral("notes.md")},
+                     &options, &error),
+                 std::nullopt);
+        QCOMPARE(options.configPath, QFileInfo(configFile).absoluteFilePath());
+        QCOMPARE(options.filePath, QStringLiteral("notes.md"));
+
+        options = {};
+        QCOMPARE(Cli::parseOptions(
+                     {QStringLiteral("omawrite"), QStringLiteral("notes.md"),
+                      QStringLiteral("--config=") + configFile},
+                     &options, &error),
+                 std::nullopt);
+        QCOMPARE(options.configPath, QFileInfo(configFile).absoluteFilePath());
+        QCOMPARE(options.filePath, QStringLiteral("notes.md"));
+
+        // Missing path or missing file exits non-zero before opening a window.
+        QCOMPARE(Cli::parseOptions({QStringLiteral("omawrite"), QStringLiteral("-c")},
+                                   &options, &error),
+                 std::optional<int>(1));
+        QVERIFY(!error.isEmpty());
+
+        QCOMPARE(Cli::parseOptions(
+                     {QStringLiteral("omawrite"), QStringLiteral("--config"),
+                      dir.filePath(QStringLiteral("missing.toml"))},
+                     &options, &error),
+                 std::optional<int>(1));
+        QVERIFY(error.contains(QStringLiteral("missing.toml")));
+    }
+
+    void loadsXdgAndExplicitConfigFilesWithFallbackToSystemTheme() {
+        ScopedTheme systemTheme(
+            "mode = \"dark\"\n"
+            "background = \"#111111\"\n"
+            "foreground = \"#eeeeee\"\n"
+            "accent = \"#224466\"\n");
+        QVERIFY(systemTheme.ok);
+
+        QTemporaryDir xdgDir;
+        QVERIFY(xdgDir.isValid());
+        const QByteArray oldXdg = qgetenv("XDG_CONFIG_HOME");
+        const auto restoreXdg = qScopeGuard([&] { qputenv("XDG_CONFIG_HOME", oldXdg); });
+        qputenv("XDG_CONFIG_HOME", xdgDir.path().toUtf8());
+
+        // Without any omawrite.toml or -c flag, the system theme is obeyed.
+        {
+            Backend backend;
+            QCOMPARE(backend.themeBackground(), QStringLiteral("#111111"));
+            QCOMPARE(backend.themeAccent(), QStringLiteral("#224466"));
+            QVERIFY(backend.darkMode());
+        }
+
+        // Creating $XDG_CONFIG_HOME/omawrite/omawrite.toml overrides the system theme.
+        const QString xdgConfigDir = xdgDir.filePath(QStringLiteral("omawrite"));
+        QVERIFY(QDir().mkpath(xdgConfigDir));
+        const QString xdgConfigPath = QDir(xdgConfigDir).filePath(QStringLiteral("omawrite.toml"));
+        const QString bgImageFile = xdgDir.filePath(QStringLiteral("bg.png"));
+        writeFile(bgImageFile, "fake-image");
+
+        writeFile(xdgConfigPath,
+                  "[theme]\n"
+                  "mode = \"light\"\n"
+                  "background = \"#fafafa\"\n"
+                  "foreground = \"#202020\"\n"
+                  "accent = \"#aa3355\"\n"
+                  "code_background = \"#eaeaea\"\n"
+                  "background_image = \"../bg.png\"\n"
+                  "background_opacity = 0.72\n"
+                  "\n"
+                  "[editor]\n"
+                  "zoom = 1.25\n");
+
+        {
+            Backend backend;
+            QVERIFY(!backend.darkMode());
+            QCOMPARE(backend.themeBackground(), QStringLiteral("#fafafa"));
+            QCOMPARE(backend.themeForeground(), QStringLiteral("#202020"));
+            QCOMPARE(backend.themeAccent(), QStringLiteral("#aa3355"));
+            QCOMPARE(backend.themeCodeBackground(), QStringLiteral("#eaeaea"));
+            QCOMPARE(backend.backgroundImage(),
+                     QUrl::fromLocalFile(QFileInfo(bgImageFile).absoluteFilePath()));
+            QCOMPARE(backend.backgroundOpacity(), 0.72);
+            QCOMPARE(backend.textScale(), 1.25);
+        }
+
+        // An explicit -c/--config path takes precedence over $XDG_CONFIG_HOME.
+        const QString customPath = xdgDir.filePath(QStringLiteral("custom.toml"));
+        writeFile(customPath,
+                  "mode = \"dark\"\n"
+                  "background = \"#223344\"\n"
+                  "foreground = \"#ddeeff\"\n"
+                  "accent = \"#55aaff\"\n");
+
+        Backend explicitBackend(customPath);
+        QVERIFY(explicitBackend.darkMode());
+        QCOMPARE(explicitBackend.themeBackground(), QStringLiteral("#223344"));
+        QCOMPARE(explicitBackend.themeForeground(), QStringLiteral("#ddeeff"));
+        QCOMPARE(explicitBackend.themeAccent(), QStringLiteral("#55aaff"));
+        QVERIFY(explicitBackend.backgroundImage().isEmpty());
+
+        // Live edits to the explicit config reload automatically.
+        QSignalSpy colorSpy(&explicitBackend, &Backend::themeColorsChanged);
+        writeFile(customPath,
+                  "mode = \"dark\"\n"
+                  "background = \"#334455\"\n"
+                  "foreground = \"#ddeeff\"\n"
+                  "accent = \"#55aaff\"\n");
+        QTRY_VERIFY(colorSpy.count() >= 1);
+        QCOMPARE(explicitBackend.themeBackground(), QStringLiteral("#334455"));
+
+        // Reset zoom setting so subsequent tests start at 1.0.
+        QSettings().remove(QStringLiteral("text/zoom"));
+    }
+
+    void generatesDefaultConfigFromSystemSettingsWithoutOverwriting() {
+        ScopedTheme systemTheme(
+            "mode = \"dark\"\n"
+            "background = \"#16242d\"\n"
+            "foreground = \"#d6e2ee\"\n"
+            "accent = \"#8bc9eb\"\n"
+            "selection = \"#243d56\"\n"
+            "bright_foreground = \"#f2fcff\"\n"
+            "lighter_background = \"#1b2d40\"\n");
+        QVERIFY(systemTheme.ok);
+
+        QTemporaryDir xdgDir;
+        QVERIFY(xdgDir.isValid());
+        const QByteArray oldXdg = qgetenv("XDG_CONFIG_HOME");
+        const auto restoreXdg = qScopeGuard([&] { qputenv("XDG_CONFIG_HOME", oldXdg); });
+        qputenv("XDG_CONFIG_HOME", xdgDir.path().toUtf8());
+
+        QSettings().setValue(QStringLiteral("text/zoom"), 1.25);
+        const auto restoreSettings = qScopeGuard([] {
+            QSettings().remove(QStringLiteral("text/zoom"));
+        });
+
+        const QString expectedPath = QFileInfo(Backend::defaultConfigPath()).absoluteFilePath();
+        QString message;
+        QCOMPARE(Backend::generateDefaultConfigFile(true, &message), 0);
+        QVERIFY(message.contains(expectedPath));
+        QVERIFY(QFileInfo::exists(expectedPath));
+
+        const QString generated = QString::fromUtf8(readFile(expectedPath));
+        QVERIFY(generated.contains(QStringLiteral("mode = \"dark\"")));
+        QVERIFY(generated.contains(QStringLiteral("background = \"#16242d\"")));
+        QVERIFY(generated.contains(QStringLiteral("foreground = \"#d6e2ee\"")));
+        QVERIFY(generated.contains(QStringLiteral("accent = \"#8bc9eb\"")));
+        QVERIFY(generated.contains(QStringLiteral("selection = \"#243d56\"")));
+        QVERIFY(generated.contains(QStringLiteral("selection_foreground = \"#f2fcff\"")));
+        QVERIFY(generated.contains(QStringLiteral("code_background = \"#1b2d40\"")));
+        QVERIFY(generated.contains(QStringLiteral("font = \"IBM Plex Mono\"")));
+        QVERIFY(generated.contains(QStringLiteral("zoom = 1.25")));
+
+        // Calling `-g` / `--generate` again refuses to overwrite an existing file.
+        writeFile(expectedPath, "# custom user config\n");
+        QString secondMessage;
+        QCOMPARE(Backend::generateDefaultConfigFile(true, &secondMessage), 1);
+        QVERIFY(secondMessage.contains(expectedPath));
+        QCOMPARE(readFile(expectedPath), QByteArray("# custom user config\n"));
+
+        // Cli::handleArguments also handles -g / --generate before starting the app.
+        QCOMPARE(Cli::handleArguments(
+                     {QStringLiteral("omawrite"), QStringLiteral("-g")},
+                     QStringLiteral("1.2.3")),
+                 std::optional<int>(1));
+        QVERIFY(QFile::remove(expectedPath));
+        QCOMPARE(Cli::handleArguments(
+                     {QStringLiteral("omawrite"), QStringLiteral("--generate")},
+                     QStringLiteral("1.2.3")),
+                 std::optional<int>(0));
+        QVERIFY(QFileInfo::exists(expectedPath));
     }
 
 private:

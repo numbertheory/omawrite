@@ -404,6 +404,26 @@ ApplicationWindow {
     Item {
         anchors.fill: parent
 
+        Image {
+            id: backgroundArt
+            objectName: "backgroundImage"
+            anchors.fill: parent
+            source: backend.backgroundImage
+            visible: source.toString() !== ""
+            fillMode: Image.PreserveAspectCrop
+            asynchronous: true
+            smooth: true
+        }
+
+        Rectangle {
+            id: backgroundOverlay
+            objectName: "backgroundOverlay"
+            anchors.fill: parent
+            color: win.pageColor
+            visible: backgroundArt.visible
+            opacity: backend.backgroundOpacity
+        }
+
         Flickable {
             id: editorFlick
             objectName: "editorScroll"
