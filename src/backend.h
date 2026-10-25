@@ -178,7 +178,7 @@ private:
     void scheduleWordCount();
     QTextBlockFormat proseBlockFormat() const;
     QTextBlockFormat codeBlockFormat() const;
-    void applyDocumentTypography();
+    void applyDocumentTypography(bool preserveUndo = false);
     void reapplyTypographyToChange();
     void scheduleRecovery();
     void writeRecovery();

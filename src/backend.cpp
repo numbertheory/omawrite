@@ -493,7 +493,7 @@ void Backend::attachDocument(QObject *textDocument) {
                 m_lastChangeAdded = charsAdded;
             });
 
-    applyDocumentTypography();
+    applyDocumentTypography(false);
     restoreRecovery();
 }
 
@@ -976,7 +976,7 @@ void Backend::setCodeFont(const QString &family) {
         emit codeLineNumbersChanged();
     if (m_highlighter)
         m_highlighter->setCodeFont(codeFont());
-    applyDocumentTypography();
+    applyDocumentTypography(true);
     emit codeBlockLinesChanged();
     emit codeBlockPanelsChanged();
 }
@@ -1047,7 +1047,7 @@ QStringList Backend::selectableFontFamilies(const QStringList &families) {
 void Backend::documentFontChanged() {
     if (m_highlighter)
         m_highlighter->refreshFont();
-    applyDocumentTypography();
+    applyDocumentTypography(true);
     emit codeBlockLinesChanged();
     emit codeBlockPanelsChanged();
 }
@@ -1063,7 +1063,7 @@ void Backend::loadDocumentText(const QString &text) {
     m_lastDocumentText = text;
     m_loading = false;
 
-    applyDocumentTypography();
+    applyDocumentTypography(false);
     m_wordCountTimer.stop();
     m_wordCountStale = true;
     m_wordCountAgain = false;
@@ -1643,7 +1643,7 @@ void Backend::loadOmarchyTheme() {
                                 codeFont());
     }
 
-    applyDocumentTypography();
+    applyDocumentTypography(true);
 
     if (m_darkMode != wasDark)
         emit darkModeChanged();
@@ -1906,20 +1906,52 @@ QVariantList Backend::codeBlockLines() const {
     return result;
 }
 
-void Backend::applyDocumentTypography() {
+void Backend::applyDocumentTypography(bool preserveUndo) {
     if (!m_document)
         return;
 
-    // A full pass is only used for freshly loaded/attached documents, so it is
-    // safe to drop undo history here (re-enabling clears the stack anyway).
-    const bool undoEnabled = m_document->isUndoRedoEnabled();
-    m_document->setUndoRedoEnabled(false);
-
-    m_formattingTypography = true;
     const QTextBlockFormat proseFmt = proseBlockFormat();
     const QTextBlockFormat codeFmt = codeBlockFormat();
 
+    bool needed = false;
     bool inCode = false;
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        bool isCode = false;
+        if (block.userState() >= MarkdownHighlighter::InsideFence) {
+            isCode = true;
+            inCode = true;
+        } else if (inCode) {
+            isCode = true;
+            inCode = false;
+        }
+
+        const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
+        if (!blockFormatMatches(block.blockFormat(), target)) {
+            needed = true;
+            break;
+        }
+    }
+
+    if (!needed) {
+        if (m_codeLineNumbers)
+            emit codeBlockLinesChanged();
+        emit codeBlockPanelsChanged();
+        return;
+    }
+
+    // A full pass without preserveUndo is only used for freshly loaded/attached
+    // documents, so it is safe to drop undo history there (re-enabling clears the
+    // stack anyway). Live updates keep undo enabled so earlier edits can still be undone.
+    const bool undoEnabled = m_document->isUndoRedoEnabled();
+    if (!preserveUndo)
+        m_document->setUndoRedoEnabled(false);
+
+    m_formattingTypography = true;
+    QTextCursor docCursor(m_document);
+    if (preserveUndo)
+        docCursor.joinPreviousEditBlock();
+
+    inCode = false;
     for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
         bool isCode = false;
         if (block.userState() >= MarkdownHighlighter::InsideFence) {
@@ -1936,9 +1968,15 @@ void Backend::applyDocumentTypography() {
             cursor.setBlockFormat(target);
         }
     }
+
+    if (preserveUndo)
+        docCursor.endEditBlock();
+
     m_formattingTypography = false;
 
-    m_document->setUndoRedoEnabled(undoEnabled);
+    if (!preserveUndo)
+        m_document->setUndoRedoEnabled(undoEnabled);
+
     if (m_codeLineNumbers)
         emit codeBlockLinesChanged();
     emit codeBlockPanelsChanged();

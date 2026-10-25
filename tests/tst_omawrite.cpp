@@ -319,6 +319,86 @@ private slots:
         QVERIFY(allLinesSpaced());
     }
 
+    void preservesUndoHistoryAcrossLiveFontZoomAndThemeChanges() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        const auto restoreSettings = qScopeGuard([] {
+            QSettings().remove(QStringLiteral("text/zoom"));
+            QSettings().remove(QStringLiteral("editor/font"));
+        });
+
+        QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString customConfig = scratch.filePath(QStringLiteral("omawrite.toml"));
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "background = \"#141d17\"\n"
+                  "foreground = \"#dce7e1\"\n"
+                  "code_background = \"#1b2720\"\n"
+                  "font = \"IBM Plex Mono\"\n"
+                  "zoom = 1.0\n");
+
+        Backend backend(customConfig);
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> object(component.create());
+        auto *window = qobject_cast<QQuickWindow *>(object.data());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        auto *quickDocument = qobject_cast<QQuickTextDocument *>(
+            editor->property("textDocument").value<QObject *>());
+        QVERIFY(quickDocument);
+        QTextDocument *document = quickDocument->textDocument();
+        QVERIFY(document);
+
+        // Edit the document
+        editor->setProperty("text", QStringLiteral("hello world"));
+        QMetaObject::invokeMethod(editor, "forceActiveFocus");
+        QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 0), Q_ARG(int, 5));
+        QMetaObject::invokeMethod(editor, "wrapSelection", Q_ARG(QVariant, QStringLiteral("**")));
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("**hello** world"));
+        QVERIFY(document->isUndoAvailable());
+
+        // 1. Changing editor font live preserves undo history
+        backend.setEditorFont(QStringLiteral("DejaVu Sans"));
+        backend.documentFontChanged();
+        QVERIFY(document->isUndoAvailable());
+
+        // 2. Changing code font live preserves undo history
+        backend.setCodeFont(QStringLiteral("DejaVu Sans Mono"));
+        QVERIFY(document->isUndoAvailable());
+
+        // 3. Changing text zoom live preserves undo history
+        backend.setTextZoom(1.25);
+        QVERIFY(document->isUndoAvailable());
+
+        // 4. Live reload of config file (theme, colors, zoom, font) preserves undo history
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "background = \"#1a202c\"\n"
+                  "foreground = \"#edf2f7\"\n"
+                  "code_background = \"#2d3748\"\n"
+                  "font = \"DejaVu Sans\"\n"
+                  "code_font = \"DejaVu Sans Mono\"\n"
+                  "zoom = 1.25\n");
+        backend.loadOmarchyTheme();
+        QVERIFY(document->isUndoAvailable());
+
+        // The earlier edit can still be undone and redone cleanly
+        QMetaObject::invokeMethod(editor, "undo");
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("hello world"));
+        QVERIFY(document->isRedoAvailable());
+        QMetaObject::invokeMethod(editor, "redo");
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("**hello** world"));
+    }
+
     void searchFollowsEditsWithoutTakingTheCaret() {
         const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
         QVERIFY(!mainQmlPath.isEmpty());
