@@ -7,6 +7,7 @@
 #include <QFutureWatcher>
 #include <QString>
 #include <QStringList>
+#include <QTextBlockFormat>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
@@ -31,10 +32,17 @@ class Backend : public QObject {
     Q_PROPERTY(QString themeForeground READ themeForeground NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeSelection READ themeSelection NOTIFY themeColorsChanged)
+    Q_PROPERTY(QString themeCodeBackground READ themeCodeBackground NOTIFY themeColorsChanged)
+    Q_PROPERTY(QString themeCodeForeground READ themeCodeForeground NOTIFY themeColorsChanged)
+    Q_PROPERTY(bool codeLineNumbers READ codeLineNumbers NOTIFY codeLineNumbersChanged)
+    Q_PROPERTY(qreal codeLineNumberMargin READ codeLineNumberMargin NOTIFY textScaleChanged)
+    Q_PROPERTY(QVariantList codeBlockLines READ codeBlockLines NOTIFY codeBlockLinesChanged)
     Q_PROPERTY(QString themeSelectionForeground READ themeSelectionForeground NOTIFY themeColorsChanged)
     Q_PROPERTY(QUrl backgroundImage READ backgroundImage NOTIFY backgroundImageChanged)
     Q_PROPERTY(qreal backgroundOpacity READ backgroundOpacity NOTIFY backgroundImageChanged)
     Q_PROPERTY(QString editorFont READ editorFont WRITE setEditorFont NOTIFY editorFontChanged)
+    Q_PROPERTY(QString codeFont READ codeFont WRITE setCodeFont NOTIFY codeFontChanged)
+    Q_PROPERTY(QVariantList codeBlockPanels READ codeBlockPanels NOTIFY codeBlockPanelsChanged)
     Q_PROPERTY(QStringList availableFonts READ availableFonts CONSTANT)
 
 public:
@@ -66,11 +74,18 @@ public:
     QString themeAccent() const { return m_themeAccent; }
     QString themeSelection() const { return m_themeSelection; }
     QString themeCodeBackground() const { return m_themeCodeBackground; }
+    QString themeCodeForeground() const { return m_themeCodeForeground; }
+    bool codeLineNumbers() const { return m_codeLineNumbers; }
+    qreal codeLineNumberMargin() const;
+    Q_INVOKABLE QVariantList codeBlockLines() const;
     QString themeSelectionForeground() const { return m_themeSelectionForeground; }
     QUrl backgroundImage() const { return m_backgroundImage; }
     qreal backgroundOpacity() const { return m_backgroundOpacity; }
     QString editorFont() const { return m_editorFont; }
     void setEditorFont(const QString &family);
+    QString codeFont() const { return !m_codeFont.isEmpty() ? m_codeFont : m_editorFont; }
+    void setCodeFont(const QString &family);
+    Q_INVOKABLE QVariantList codeBlockPanels() const;
     QStringList availableFonts() const;
     static QString defaultEditorFont();
     static QStringList selectableFontFamilies(const QStringList &families);
@@ -127,6 +142,10 @@ signals:
     void saveDialogRequested(const QUrl &suggestedUrl);
     void saveSucceeded();
     void externalChangeDetected(bool deleted, bool locallyModified);
+    void codeLineNumbersChanged();
+    void codeBlockLinesChanged();
+    void codeBlockPanelsChanged();
+    void codeFontChanged();
 
 private:
     friend class OmawriteTest;
@@ -143,6 +162,8 @@ private:
     void setWordCount(int words);
     void refreshWordCount();
     void scheduleWordCount();
+    QTextBlockFormat proseBlockFormat() const;
+    QTextBlockFormat codeBlockFormat() const;
     void applyDocumentTypography();
     void reapplyTypographyToChange();
     void scheduleRecovery();
@@ -202,16 +223,20 @@ private:
 
     QString m_explicitConfigPath;
     QString m_lastConfigFont;
+    QString m_lastConfigCodeFont;
     QString m_lastConfigZoom;
     QString m_themeBackground;
     QString m_themeForeground;
     QString m_themeAccent;
     QString m_themeSelection;
     QString m_themeCodeBackground;
+    QString m_themeCodeForeground;
+    bool m_codeLineNumbers = false;
     QString m_themeSelectionForeground;
     QUrl m_backgroundImage;
     qreal m_backgroundOpacity = 0.85;
     QString m_editorFont;
+    QString m_codeFont;
     QFileSystemWatcher m_themeWatcher;
     QTimer m_themeReloadTimer;
 };

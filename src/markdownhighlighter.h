@@ -12,7 +12,10 @@ public:
     explicit MarkdownHighlighter(QTextDocument *document);
 
     void setTheme(bool darkMode, const QString &background, const QString &foreground,
-                  const QString &accent, const QString &codeBackground);
+                  const QString &accent, const QString &codeBackground,
+                  const QString &codeForeground = QString(),
+                  const QString &codeFont = QString());
+    void setCodeFont(const QString &fontFamily);
     void setSearch(const QString &query, int currentMatchStart);
     void setCaret(int position);
     void refreshFont();
@@ -73,6 +76,8 @@ private:
     QString m_customForeground;
     QString m_customAccent;
     QString m_customCodeBackground;
+    QString m_customCodeForeground;
+    QString m_customCodeFont;
     QTextCharFormat m_markerFormat;
     QTextCharFormat m_hiddenMarkerFormat;
     QTextCharFormat m_headingFormat;

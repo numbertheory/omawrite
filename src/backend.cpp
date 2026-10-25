@@ -1,5 +1,6 @@
 #include "backend.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QClipboard>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QColor>
@@ -40,11 +41,6 @@
 
 constexpr qreal typoraLineHeightPercent = 140;
 
-static QTextBlockFormat lineHeightFormat() {
-    QTextBlockFormat format;
-    format.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
-    return format;
-}
 const QString lastSaveDirectorySetting = QStringLiteral("file/lastSaveDirectory");
 const QString textZoomSetting = QStringLiteral("text/zoom");
 
@@ -312,6 +308,7 @@ QString Backend::generateSystemConfigToml(bool systemDarkMode) {
     const QString resolvedCodeBackground = (lighter.isValid() && lighter != page
                                                 ? lighter
                                                 : blend(page, QColor(resolvedForeground), 0.06)).name();
+    const QString resolvedCodeForeground = resolvedForeground;
 
     bool zoomOk = false;
     const qreal storedZoom = QSettings().value(textZoomSetting, 1.0).toDouble(&zoomOk);
@@ -334,12 +331,15 @@ QString Backend::generateSystemConfigToml(bool systemDarkMode) {
                "selection = \"%5\"\n"
                "selection_foreground = \"%6\"\n"
                "code_background = \"%7\"\n"
+               "code_foreground = \"%8\"\n"
+               "code_line_numbers = false\n"
                "\n"
                "# background_image = \"\"\n"
                "# background_opacity = 0.85\n"
                "\n"
-               "font = \"%8\"\n"
-               "zoom = %9\n")
+               "font = \"%9\"\n"
+               "# code_font = \"\"\n"
+               "zoom = %10\n")
         .arg(darkMode ? QStringLiteral("dark") : QStringLiteral("light"),
              resolvedBackground,
              resolvedForeground,
@@ -347,6 +347,7 @@ QString Backend::generateSystemConfigToml(bool systemDarkMode) {
              resolvedSelection,
              resolvedSelectionForeground,
              resolvedCodeBackground,
+             resolvedCodeForeground,
              escapedFont,
              QString::number(zoom, 'g', 4));
 }
@@ -475,7 +476,7 @@ void Backend::attachDocument(QObject *textDocument) {
     m_lastDocumentText = m_document->toPlainText();
     m_highlighter = new MarkdownHighlighter(m_document);
     m_highlighter->setTheme(m_darkMode, m_themeBackground, m_themeForeground, m_themeAccent,
-                            m_themeCodeBackground);
+                            m_themeCodeBackground, m_themeCodeForeground, codeFont());
     m_highlighter->setCaret(m_caretPosition);
 
     connect(m_document, &QTextDocument::contentsChange, this,
@@ -950,6 +951,24 @@ void Backend::setEditorFont(const QString &family) {
     m_editorFont = family;
     QSettings().setValue(editorFontSetting, family);
     emit editorFontChanged();
+    if (m_codeFont.isEmpty()) {
+        emit codeFontChanged();
+        if (m_highlighter)
+            m_highlighter->setCodeFont(codeFont());
+    }
+}
+
+void Backend::setCodeFont(const QString &family) {
+    if (family == m_codeFont)
+        return;
+
+    m_codeFont = family;
+    emit codeFontChanged();
+    if (m_highlighter)
+        m_highlighter->setCodeFont(codeFont());
+    applyDocumentTypography();
+    emit codeBlockLinesChanged();
+    emit codeBlockPanelsChanged();
 }
 
 QStringList Backend::availableFonts() const {
@@ -990,6 +1009,9 @@ QStringList Backend::selectableFontFamilies(const QStringList &families) {
 void Backend::documentFontChanged() {
     if (m_highlighter)
         m_highlighter->refreshFont();
+    applyDocumentTypography();
+    emit codeBlockLinesChanged();
+    emit codeBlockPanelsChanged();
 }
 
 void Backend::loadDocumentText(const QString &text) {
@@ -1285,9 +1307,12 @@ void Backend::loadOmarchyTheme() {
     QString brightForeground;
     QString lighterBackground;
     QString codeBackground;
+    QString codeForeground;
+    QString codeLineNumbersValue;
     QString backgroundImagePath;
     QString backgroundOpacityValue;
     QString fontValue;
+    QString codeFontValue;
     QString zoomValue;
 
     QFile file(colorsPath);
@@ -1326,6 +1351,10 @@ void Backend::loadOmarchyTheme() {
                 lighterBackground = value;
             else if (usingCustomConfig && key == QStringLiteral("code_background"))
                 codeBackground = value;
+            else if (key == QStringLiteral("code_foreground"))
+                codeForeground = value;
+            else if (usingCustomConfig && key == QStringLiteral("code_line_numbers"))
+                codeLineNumbersValue = value;
             else if (usingCustomConfig && key == QStringLiteral("background_image"))
                 backgroundImagePath = value;
             else if (usingCustomConfig && key == QStringLiteral("background_opacity"))
@@ -1333,6 +1362,9 @@ void Backend::loadOmarchyTheme() {
             else if (usingCustomConfig
                      && (key == QStringLiteral("font") || key == QStringLiteral("editor_font")))
                 fontValue = value;
+            else if (usingCustomConfig
+                     && (key == QStringLiteral("code_font") || key == QStringLiteral("editor_code_font")))
+                codeFontValue = value;
             else if (usingCustomConfig
                      && (key == QStringLiteral("zoom") || key == QStringLiteral("text_scale")))
                 zoomValue = value;
@@ -1342,7 +1374,8 @@ void Backend::loadOmarchyTheme() {
     const bool wasDark = m_darkMode;
     const QStringList previousColors{m_themeBackground, m_themeForeground, m_themeAccent,
                                      m_themeSelection, m_themeSelectionForeground,
-                                     m_themeCodeBackground};
+                                     m_themeCodeBackground, m_themeCodeForeground};
+    const bool previousCodeLineNumbers = m_codeLineNumbers;
     const QUrl previousBackgroundImage = m_backgroundImage;
     const qreal previousBackgroundOpacity = m_backgroundOpacity;
 
@@ -1394,6 +1427,17 @@ void Backend::loadOmarchyTheme() {
                                  ? chosenCodeColor
                                  : blend(page, QColor(m_themeForeground), 0.06)).name();
 
+    const QColor chosenCodeFg(codeForeground);
+    m_themeCodeForeground = chosenCodeFg.isValid() ? chosenCodeFg.name() : m_themeForeground;
+
+    bool resolvedCodeLineNumbers = false;
+    if (usingCustomConfig && !codeLineNumbersValue.isEmpty()) {
+        const QString lower = codeLineNumbersValue.trimmed().toLower();
+        resolvedCodeLineNumbers = (lower == QStringLiteral("true") || lower == QStringLiteral("1")
+                                   || lower == QStringLiteral("yes"));
+    }
+    m_codeLineNumbers = resolvedCodeLineNumbers;
+
     QUrl resolvedImage;
     if (usingCustomConfig && !backgroundImagePath.isEmpty()) {
         QString expanded = backgroundImagePath;
@@ -1435,6 +1479,15 @@ void Backend::loadOmarchyTheme() {
             m_lastConfigFont.clear();
         }
 
+        if (!codeFontValue.isEmpty() && codeFontValue != m_lastConfigCodeFont) {
+            m_lastConfigCodeFont = codeFontValue;
+            if (QFontDatabase::hasFamily(codeFontValue))
+                setCodeFont(codeFontValue);
+        } else if (codeFontValue.isEmpty()) {
+            m_lastConfigCodeFont.clear();
+            setCodeFont(QString());
+        }
+
         if (!zoomValue.isEmpty() && zoomValue != m_lastConfigZoom) {
             m_lastConfigZoom = zoomValue;
             bool ok = false;
@@ -1461,21 +1514,28 @@ void Backend::loadOmarchyTheme() {
         }
     } else {
         m_lastConfigFont.clear();
+        m_lastConfigCodeFont.clear();
+        setCodeFont(QString());
         m_lastConfigZoom.clear();
     }
 
     if (m_highlighter) {
         m_highlighter->setTheme(m_darkMode, m_themeBackground, m_themeForeground,
-                                m_themeAccent, m_themeCodeBackground);
+                                m_themeAccent, m_themeCodeBackground, m_themeCodeForeground,
+                                codeFont());
     }
+
+    applyDocumentTypography();
 
     if (m_darkMode != wasDark)
         emit darkModeChanged();
     const QStringList colors{m_themeBackground, m_themeForeground, m_themeAccent,
                              m_themeSelection, m_themeSelectionForeground,
-                             m_themeCodeBackground};
+                             m_themeCodeBackground, m_themeCodeForeground};
     if (colors != previousColors)
         emit themeColorsChanged();
+    if (m_codeLineNumbers != previousCodeLineNumbers)
+        emit codeLineNumbersChanged();
     if (m_backgroundImage != previousBackgroundImage
             || !qFuzzyCompare(m_backgroundOpacity, previousBackgroundOpacity)) {
         emit backgroundImageChanged();
@@ -1606,6 +1666,117 @@ void Backend::scheduleWordCount() {
     m_wordCountTimer.start();
 }
 
+static bool blockFormatMatches(const QTextBlockFormat &actual, const QTextBlockFormat &target) {
+    if (actual.lineHeightType() != target.lineHeightType()
+            || !qFuzzyCompare(actual.lineHeight(), target.lineHeight()))
+        return false;
+    if (actual.background() != target.background())
+        return false;
+    if (!qFuzzyCompare(actual.leftMargin(), target.leftMargin()))
+        return false;
+    return true;
+}
+
+QTextBlockFormat Backend::proseBlockFormat() const {
+    QTextBlockFormat format;
+    format.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
+    format.setBackground(Qt::NoBrush);
+    format.setLeftMargin(0.0);
+    return format;
+}
+
+QTextBlockFormat Backend::codeBlockFormat() const {
+    QTextBlockFormat format;
+    format.setLineHeight(100.0, QTextBlockFormat::ProportionalHeight);
+    if (!m_themeCodeBackground.isEmpty())
+        format.setBackground(QBrush(QColor(m_themeCodeBackground)));
+    else
+        format.setBackground(Qt::NoBrush);
+    format.setLeftMargin(0.0);
+    return format;
+}
+
+qreal Backend::codeLineNumberMargin() const {
+    const QFont font = !m_codeFont.isEmpty()
+        ? QFont(m_codeFont)
+        : (m_document ? m_document->defaultFont() : QFont(m_editorFont));
+    const QFontMetricsF fm(font);
+    const qreal width = fm.horizontalAdvance(QLatin1String("9999"));
+    return width > 0.0 ? width : 40.0;
+}
+
+QVariantList Backend::codeBlockPanels() const {
+    QVariantList result;
+    if (!m_document || !m_document->documentLayout())
+        return result;
+
+    bool inCode = false;
+    qreal startY = 0;
+    qreal endY = 0;
+
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        const int state = block.userState();
+        if (state >= MarkdownHighlighter::InsideFence) {
+            const QRectF rect = m_document->documentLayout()->blockBoundingRect(block);
+            if (!inCode) {
+                inCode = true;
+                startY = rect.y();
+            }
+            endY = rect.bottom();
+        } else if (inCode) {
+            const QRectF rect = m_document->documentLayout()->blockBoundingRect(block);
+            endY = rect.bottom();
+            inCode = false;
+
+            QVariantMap map;
+            map.insert(QStringLiteral("y"), startY);
+            map.insert(QStringLiteral("height"), endY - startY);
+            result.append(map);
+        }
+    }
+
+    if (inCode) {
+        QVariantMap map;
+        map.insert(QStringLiteral("y"), startY);
+        map.insert(QStringLiteral("height"), endY - startY);
+        result.append(map);
+    }
+
+    return result;
+}
+
+QVariantList Backend::codeBlockLines() const {
+    QVariantList result;
+    if (!m_document || !m_document->documentLayout() || !m_codeLineNumbers)
+        return result;
+
+    bool inCode = false;
+    int lineNumber = 0;
+
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        const int state = block.userState();
+        if (state >= MarkdownHighlighter::InsideFence) {
+            if (!inCode) {
+                inCode = true;
+                lineNumber = 0;
+            } else {
+                lineNumber++;
+                const QRectF rect = m_document->documentLayout()->blockBoundingRect(block);
+                QVariantMap map;
+                map.insert(QStringLiteral("y"), rect.y());
+                map.insert(QStringLiteral("height"), rect.height());
+                map.insert(QStringLiteral("number"), lineNumber);
+                result.append(map);
+            }
+        } else {
+            inCode = false;
+            lineNumber = 0;
+        }
+    }
+
+    return result;
+}
+
 void Backend::applyDocumentTypography() {
     if (!m_document)
         return;
@@ -1616,47 +1787,92 @@ void Backend::applyDocumentTypography() {
     m_document->setUndoRedoEnabled(false);
 
     m_formattingTypography = true;
-    QTextCursor cursor(m_document);
-    cursor.select(QTextCursor::Document);
-    cursor.mergeBlockFormat(lineHeightFormat());
+    const QTextBlockFormat proseFmt = proseBlockFormat();
+    const QTextBlockFormat codeFmt = codeBlockFormat();
+
+    bool inCode = false;
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        bool isCode = false;
+        if (block.userState() >= MarkdownHighlighter::InsideFence) {
+            isCode = true;
+            inCode = true;
+        } else if (inCode) {
+            isCode = true;
+            inCode = false;
+        }
+
+        const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
+        if (!blockFormatMatches(block.blockFormat(), target)) {
+            QTextCursor cursor(block);
+            cursor.setBlockFormat(target);
+        }
+    }
     m_formattingTypography = false;
 
     m_document->setUndoRedoEnabled(undoEnabled);
+    if (m_codeLineNumbers)
+        emit codeBlockLinesChanged();
+    emit codeBlockPanelsChanged();
 }
 
 void Backend::reapplyTypographyToChange() {
     if (!m_document)
         return;
 
-    // Format only the block(s) touched by the last edit instead of the whole
-    // document, and fold the change into the preceding edit command so a single
-    // undo reverts both the text and its formatting.
-    const int maxPos = m_document->characterCount() - 1;
-    const int start = qBound(0, m_lastChangePos, maxPos);
-    const int end = qBound(start, m_lastChangePos + m_lastChangeAdded, maxPos);
+    const QTextBlockFormat proseFmt = proseBlockFormat();
+    const QTextBlockFormat codeFmt = codeBlockFormat();
 
-    // Blocks that already have it are left alone: an undo brings their format
-    // back with the text, and merging anyway would push a command that clears
-    // the redo stack.
     bool needed = false;
-    for (QTextBlock block = m_document->findBlock(start);
-         block.isValid() && block.position() <= end; block = block.next()) {
-        const QTextBlockFormat format = block.blockFormat();
-        if (format.lineHeightType() != QTextBlockFormat::ProportionalHeight
-                || format.lineHeight() != typoraLineHeightPercent) {
+    bool inCode = false;
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        bool isCode = false;
+        if (block.userState() >= MarkdownHighlighter::InsideFence) {
+            isCode = true;
+            inCode = true;
+        } else if (inCode) {
+            isCode = true;
+            inCode = false;
+        }
+
+        const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
+        if (!blockFormatMatches(block.blockFormat(), target)) {
             needed = true;
             break;
         }
     }
-    if (!needed)
+    if (!needed) {
+        if (m_codeLineNumbers)
+            emit codeBlockLinesChanged();
+        emit codeBlockPanelsChanged();
         return;
+    }
 
     m_formattingTypography = true;
     QTextCursor cursor(m_document);
     cursor.joinPreviousEditBlock();
-    cursor.setPosition(start);
-    cursor.setPosition(end, QTextCursor::KeepAnchor);
-    cursor.mergeBlockFormat(lineHeightFormat());
+
+    inCode = false;
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        bool isCode = false;
+        if (block.userState() >= MarkdownHighlighter::InsideFence) {
+            isCode = true;
+            inCode = true;
+        } else if (inCode) {
+            isCode = true;
+            inCode = false;
+        }
+
+        const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
+        if (!blockFormatMatches(block.blockFormat(), target)) {
+            QTextCursor blockCursor(block);
+            blockCursor.setBlockFormat(target);
+        }
+    }
+
     cursor.endEditBlock();
     m_formattingTypography = false;
+
+    if (m_codeLineNumbers)
+        emit codeBlockLinesChanged();
+    emit codeBlockPanelsChanged();
 }

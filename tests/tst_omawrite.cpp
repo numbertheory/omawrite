@@ -3544,6 +3544,150 @@ private slots:
         QVERIFY(QFileInfo::exists(expectedPath));
     }
 
+    void codeBlocksHaveSingleSpacingAndConfigurableColorsAndLineNumbers() {
+        QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString customConfig = scratch.filePath(QStringLiteral("code_theme.toml"));
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "background = \"#111111\"\n"
+                  "foreground = \"#eeeeee\"\n"
+                  "code_background = \"#2a3b4c\"\n"
+                  "code_foreground = \"#33ff88\"\n"
+                  "code_font = \"IBM Plex Mono\"\n"
+                  "code_line_numbers = true\n");
+
+        Backend backend(customConfig);
+        QCOMPARE(backend.themeCodeBackground(), QStringLiteral("#2a3b4c"));
+        QCOMPARE(backend.themeCodeForeground(), QStringLiteral("#33ff88"));
+        QCOMPARE(backend.codeFont(), QStringLiteral("IBM Plex Mono"));
+        QCOMPARE(backend.codeLineNumbers(), true);
+        QVERIFY(backend.codeLineNumberMargin() > 0.0);
+
+        QTextDocument document;
+        document.setPlainText(QStringLiteral(
+            "Prose line\n"
+            "\n"
+            "```js\n"
+            "const a = 1;\n"
+            "const b = 2;\n"
+            "return a + b;\n"
+            "```\n"
+            "\n"
+            "Closing prose\n"));
+
+        backend.m_document = &document;
+        auto *testHighlighter = new MarkdownHighlighter(&document);
+        backend.m_highlighter = testHighlighter;
+        testHighlighter->setTheme(true, backend.themeBackground(), backend.themeForeground(),
+                                 backend.themeAccent(), backend.themeCodeBackground(),
+                                 backend.themeCodeForeground(), backend.codeFont());
+        testHighlighter->rehighlight();
+        backend.applyDocumentTypography();
+
+        // Prose block
+        QCOMPARE(document.findBlockByNumber(0).blockFormat().lineHeight(), 140.0);
+        QCOMPARE(document.findBlockByNumber(0).blockFormat().background().style(), Qt::NoBrush);
+        QCOMPARE(document.findBlockByNumber(0).blockFormat().leftMargin(), 0.0);
+
+        // Code blocks: single spaced (100%), background set, text starts at normal margin (0.0)
+        for (int i = 2; i <= 6; ++i) {
+            const QTextBlock block = document.findBlockByNumber(i);
+            QCOMPARE(block.blockFormat().lineHeight(), 100.0);
+            QCOMPARE(block.blockFormat().background().color(), QColor(QStringLiteral("#2a3b4c")));
+            QCOMPARE(block.blockFormat().leftMargin(), 0.0);
+        }
+
+        // Code block panels overlay covers the entire code block
+        const QVariantList panels = backend.codeBlockPanels();
+        QCOMPARE(panels.size(), 1);
+        QVERIFY(panels.at(0).toMap().value(QStringLiteral("height")).toDouble() > 0.0);
+
+        // Closing prose
+        QCOMPARE(document.findBlockByNumber(8).blockFormat().lineHeight(), 140.0);
+        QCOMPARE(document.findBlockByNumber(8).blockFormat().background().style(), Qt::NoBrush);
+        QCOMPARE(document.findBlockByNumber(8).blockFormat().leftMargin(), 0.0);
+
+        // Code lines numbers
+        const QVariantList lines = backend.codeBlockLines();
+        QCOMPARE(lines.size(), 3);
+        QCOMPARE(lines.at(0).toMap().value(QStringLiteral("number")).toInt(), 1);
+        QCOMPARE(lines.at(1).toMap().value(QStringLiteral("number")).toInt(), 2);
+        QCOMPARE(lines.at(2).toMap().value(QStringLiteral("number")).toInt(), 3);
+
+        // Character formats: opening fence, code lines, closing fence all share code_foreground and code_font
+        const auto formatsAt = [&document](int blockNumber) {
+            return document.findBlockByNumber(blockNumber).layout()->formats();
+        };
+        const QColor expectedCodeColor(QStringLiteral("#33ff88"));
+        QCOMPARE(formatsAt(2).constFirst().format.foreground().color(), expectedCodeColor);
+        QCOMPARE(formatsAt(3).constFirst().format.foreground().color(), expectedCodeColor);
+        QCOMPARE(formatsAt(4).constFirst().format.foreground().color(), expectedCodeColor);
+        QCOMPARE(formatsAt(5).constFirst().format.foreground().color(), expectedCodeColor);
+        QCOMPARE(formatsAt(6).constFirst().format.foreground().color(), expectedCodeColor);
+        QCOMPARE(formatsAt(3).constFirst().format.fontFamilies().toStringList(),
+                 QStringList{QStringLiteral("IBM Plex Mono")});
+
+        // A single line with three tick marks and no other text creates a panel for that entire line
+        document.setPlainText(QStringLiteral("```\n"));
+        testHighlighter->rehighlight();
+        backend.applyDocumentTypography();
+        const QVariantList singleFencePanels = backend.codeBlockPanels();
+        QCOMPARE(singleFencePanels.size(), 1);
+        QVERIFY(singleFencePanels.at(0).toMap().value(QStringLiteral("height")).toDouble() > 0.0);
+
+        // Resetting code_font defaults back to main editorFont
+        document.setPlainText(QStringLiteral(
+            "Prose line\n"
+            "\n"
+            "```js\n"
+            "const a = 1;\n"
+            "const b = 2;\n"
+            "return a + b;\n"
+            "```\n"
+            "\n"
+            "Closing prose\n"));
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "code_background = \"#2a3b4c\"\n"
+                  "code_foreground = \"#33ff88\"\n"
+                  "code_line_numbers = false\n");
+        backend.loadOmarchyTheme();
+        testHighlighter->rehighlight();
+        backend.applyDocumentTypography();
+        QCOMPARE(backend.codeFont(), backend.editorFont());
+        QCOMPARE(backend.codeLineNumbers(), false);
+        QCOMPARE(backend.codeBlockLines().isEmpty(), true);
+        for (int i = 2; i <= 6; ++i) {
+            const QTextBlock block = document.findBlockByNumber(i);
+            QCOMPARE(block.blockFormat().lineHeight(), 100.0);
+            QCOMPARE(block.blockFormat().leftMargin(), 0.0);
+        }
+
+        backend.m_document = nullptr;
+        backend.m_highlighter = nullptr;
+        delete testHighlighter;
+
+        // Test in Main.qml interface
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        if (!mainQmlPath.isEmpty()) {
+            QQmlEngine engine;
+            engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+            QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+            if (component.isReady()) {
+                QScopedPointer<QObject> object(component.create());
+                auto *window = qobject_cast<QQuickWindow *>(object.data());
+                if (window) {
+                    QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+                    QObject *overlay = window->findChild<QObject *>(QStringLiteral("codeLineNumbersOverlay"));
+                    QVERIFY(editor);
+                    QVERIFY(overlay);
+                    QCOMPARE(overlay->property("visible").toBool(), false);
+                }
+            }
+        }
+    }
+
 private:
     // The character formats the highlighter gives a single line of text.
     static QList<QTextCharFormat> highlightedFormats(const QString &text, int caret = -1) {

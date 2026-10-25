@@ -29,11 +29,14 @@ accent = "#89b4fa"
 selection = "#45475a"
 selection_foreground = "#cdd6f4"
 code_background = "#313244"
+code_foreground = "#f5e0dc"
+code_line_numbers = false
 
 background_image = "~/Pictures/wallpaper.png"
 background_opacity = 0.85
 
 font = "IBM Plex Mono"
+code_font = "IBM Plex Mono"
 zoom = 1.0
 ```
 

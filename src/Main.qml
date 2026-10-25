@@ -1009,6 +1009,52 @@ ApplicationWindow {
                     font.weight: editor.font.weight
                 }
 
+                Item {
+                    id: codeBlockPanelsOverlay
+                    objectName: "codeBlockPanelsOverlay"
+                    anchors.fill: parent
+                    z: -1
+
+                    Repeater {
+                        model: backend.codeBlockPanels
+
+                        Rectangle {
+                            x: 0
+                            y: modelData.y
+                            width: editor.width
+                            height: modelData.height
+                            color: backend.themeCodeBackground
+                        }
+                    }
+                }
+
+                Item {
+                    id: codeLineNumbersOverlay
+                    objectName: "codeLineNumbersOverlay"
+                    anchors.fill: parent
+                    visible: backend.codeLineNumbers
+                    z: 1
+
+                    Repeater {
+                        model: backend.codeLineNumbers ? backend.codeBlockLines : []
+
+                        Text {
+                            x: -width - 12
+                            y: modelData.y
+                            width: Math.max(24, backend.codeLineNumberMargin)
+                            height: modelData.height
+                            text: modelData.number
+                            color: win.mutedColor
+                            font.family: backend.codeFont
+                            font.pixelSize: editor.font.pixelSize
+                            font.weight: Font.Normal
+                            renderType: editor.renderType
+                            horizontalAlignment: Text.AlignRight
+                            verticalAlignment: Text.AlignTop
+                        }
+                    }
+                }
+
                 property string hoveredLinkUrl: ""
                 property real linkHoverX: 0
                 property real linkHoverY: 0
