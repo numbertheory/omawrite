@@ -1871,12 +1871,11 @@ void Backend::scheduleWordCount() {
     m_wordCountTimer.start();
 }
 
-static bool blockFormatMatches(const QTextBlockFormat &actual, const QTextBlockFormat &target,
-                               bool checkBackground = false) {
+static bool blockFormatMatches(const QTextBlockFormat &actual, const QTextBlockFormat &target) {
     if (actual.lineHeightType() != target.lineHeightType()
             || !qFuzzyCompare(actual.lineHeight(), target.lineHeight()))
         return false;
-    if (checkBackground && actual.background() != target.background())
+    if (actual.background() != target.background())
         return false;
     if (!qFuzzyCompare(actual.leftMargin(), target.leftMargin()))
         return false;
@@ -1903,10 +1902,7 @@ QTextBlockFormat Backend::proseBlockFormat() const {
 QTextBlockFormat Backend::codeBlockFormat() const {
     QTextBlockFormat format;
     format.setLineHeight(100.0, QTextBlockFormat::ProportionalHeight);
-    if (!m_themeCodeBackground.isEmpty())
-        format.setBackground(QBrush(QColor(m_themeCodeBackground)));
-    else
-        format.setBackground(Qt::NoBrush);
+    format.setBackground(Qt::NoBrush);
     format.setLeftMargin(0.0);
     return format;
 }
@@ -2066,7 +2062,6 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
 
     const QTextBlockFormat proseFmt = proseBlockFormat();
     const QTextBlockFormat codeFmt = codeBlockFormat();
-    const bool checkBackground = !preserveUndo;
 
     bool needed = false;
     bool inCode = false;
@@ -2085,7 +2080,7 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
         }
 
         const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
-        if (!blockFormatMatches(block.blockFormat(), target, checkBackground)) {
+        if (!blockFormatMatches(block.blockFormat(), target)) {
             needed = true;
         }
     }
@@ -2131,7 +2126,7 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
         }
 
         const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
-        if (!blockFormatMatches(block.blockFormat(), target, checkBackground)) {
+        if (!blockFormatMatches(block.blockFormat(), target)) {
             QTextCursor cursor(block);
             cursor.setBlockFormat(target);
         }
@@ -2178,25 +2173,32 @@ void Backend::reapplyTypographyToChange() {
     for (QTextBlock block = startBlock;
          block.isValid() && block.position() <= endBlock.position(); block = block.next()) {
         const QTextBlockFormat &target = isCodeBlock(block) ? codeFmt : proseFmt;
-        if (!blockFormatMatches(block.blockFormat(), target, false)) {
+        if (!blockFormatMatches(block.blockFormat(), target)) {
             needed = true;
             break;
         }
     }
-    if (!needed)
-        return;
 
-    m_formattingTypography = true;
-    QTextCursor cursor(m_document);
-    cursor.joinPreviousEditBlock();
-    for (QTextBlock block = startBlock;
-         block.isValid() && block.position() <= endBlock.position(); block = block.next()) {
-        const QTextBlockFormat &target = isCodeBlock(block) ? codeFmt : proseFmt;
-        if (!blockFormatMatches(block.blockFormat(), target, false)) {
-            QTextCursor blockCursor(block);
-            blockCursor.setBlockFormat(target);
+    if (needed) {
+        m_formattingTypography = true;
+        QTextCursor cursor(m_document);
+        cursor.joinPreviousEditBlock();
+        for (QTextBlock block = startBlock;
+             block.isValid() && block.position() <= endBlock.position(); block = block.next()) {
+            const QTextBlockFormat &target = isCodeBlock(block) ? codeFmt : proseFmt;
+            if (!blockFormatMatches(block.blockFormat(), target)) {
+                QTextCursor blockCursor(block);
+                blockCursor.setBlockFormat(target);
+            }
         }
+        cursor.endEditBlock();
+        m_formattingTypography = false;
     }
-    cursor.endEditBlock();
-    m_formattingTypography = false;
+
+    const bool codeParagraphChanged = m_hasCodeBlocks && (isCodeBlock(startBlock) || isCodeBlock(endBlock));
+    if (codeParagraphChanged) {
+        if (m_codeLineNumbers)
+            emit codeBlockLinesChanged();
+        emit codeBlockPanelsChanged();
+    }
 }

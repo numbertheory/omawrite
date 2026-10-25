@@ -3735,11 +3735,11 @@ private slots:
         QCOMPARE(document.findBlockByNumber(0).blockFormat().background().style(), Qt::NoBrush);
         QCOMPARE(document.findBlockByNumber(0).blockFormat().leftMargin(), 0.0);
 
-        // Code blocks: single spaced (100%), background set, text starts at normal margin (0.0)
+        // Code blocks: single spaced (100%), background handled by panel overlay, text starts at normal margin (0.0)
         for (int i = 2; i <= 6; ++i) {
             const QTextBlock block = document.findBlockByNumber(i);
             QCOMPARE(block.blockFormat().lineHeight(), 100.0);
-            QCOMPARE(block.blockFormat().background().color(), QColor(QStringLiteral("#2a3b4c")));
+            QCOMPARE(block.blockFormat().background().style(), Qt::NoBrush);
             QCOMPARE(block.blockFormat().leftMargin(), 0.0);
         }
 
@@ -3972,14 +3972,13 @@ private slots:
         QCOMPARE(linesSpy.count(), 0);
         QCOMPARE(document.firstBlock().blockFormat().lineHeight(), 140.0);
 
-        // 2. Ordinary edit inside code block without touching fences: overlays must NOT refresh
+        // 2. Edit inside code block: line numbers and panels update to keep line numbers in sync
         const QTextBlock codeLineBlock = document.findBlockByNumber(3);
         cursor.setPosition(codeLineBlock.position() + 5);
         cursor.insertText(QStringLiteral("/* note */ "));
         backend.editorTextChanged();
 
-        QCOMPARE(panelsSpy.count(), 0);
-        QCOMPARE(linesSpy.count(), 0);
+        QVERIFY(linesSpy.count() > 0);
         QCOMPARE(codeLineBlock.blockFormat().lineHeight(), 100.0);
 
         // 3. Changing fence boundaries by creating a second code block: overlays MUST refresh
@@ -3990,6 +3989,125 @@ private slots:
         QVERIFY(panelsSpy.count() > 0);
         QCOMPARE(backend.codeBlockPanels().size(), 2);
         QCOMPARE(backend.codeBlockLines().size(), 2);
+
+        backend.m_document = nullptr;
+        backend.m_highlighter = nullptr;
+        delete testHighlighter;
+    }
+
+    void deletedCodeLinesUpdateLineNumbersEvenWhenDocumentHeightDoesNotChange() {
+        QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString customConfig = scratch.filePath(QStringLiteral("delete_line.toml"));
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "code_line_numbers = true\n");
+
+        Backend backend(customConfig);
+        QTextDocument document;
+        document.setTextWidth(150);
+        document.setPlainText(QStringLiteral(
+            "```\n"
+            "const a = 1;\n"
+            "const b = 2;\n"
+            "```\n"));
+
+        backend.m_document = &document;
+        auto *testHighlighter = new MarkdownHighlighter(&document);
+        backend.m_highlighter = testHighlighter;
+        testHighlighter->setTheme(true, backend.themeBackground(), backend.themeForeground(),
+                                 backend.themeAccent(), backend.themeCodeBackground(),
+                                 backend.themeCodeForeground(), backend.codeFont());
+        testHighlighter->rehighlight();
+        backend.applyDocumentTypography();
+
+        QObject::connect(&document, &QTextDocument::contentsChange, &backend,
+                         [&backend](int pos, int removed, int added) {
+                             if (backend.m_formattingTypography || backend.m_loading)
+                                 return;
+                             backend.m_lastChangePos = pos;
+                             backend.m_lastChangeAdded = added;
+                             backend.m_lastChangeRemoved = removed;
+                         });
+
+        QCOMPARE(backend.codeBlockLines().size(), 2);
+        const qreal initialHeight = document.size().height();
+
+        QSignalSpy linesSpy(&backend, &Backend::codeBlockLinesChanged);
+
+        // Delete the newline between the two code lines
+        const QTextBlock line2Block = document.findBlockByNumber(2);
+        QTextCursor cursor(&document);
+        cursor.setPosition(line2Block.position());
+        cursor.deletePreviousChar(); // deletes '\n'
+        backend.editorTextChanged();
+
+        // Merged line wrapped onto two rows, so document height remained unchanged
+        QCOMPARE(document.size().height(), initialHeight);
+
+        // Line numbers model refreshed and drops the deleted line's number
+        QVERIFY(linesSpy.count() > 0);
+        QCOMPARE(backend.codeBlockLines().size(), 1);
+        QCOMPARE(backend.codeBlockLines().at(0).toMap().value(QStringLiteral("number")).toInt(), 1);
+
+        backend.m_document = nullptr;
+        backend.m_highlighter = nullptr;
+        delete testHighlighter;
+    }
+
+    void changingCodeBackgroundLiveUpdatesWithoutLeavingOldParagraphColorsOrClearingUndo() {
+        QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString customConfig = scratch.filePath(QStringLiteral("code_bg_test.toml"));
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "code_background = \"#112233\"\n");
+
+        Backend backend(customConfig);
+        QTextDocument document;
+        document.setPlainText(QStringLiteral(
+            "Intro\n"
+            "```\n"
+            "let x = 1;\n"
+            "```\n"
+            "Outro\n"));
+
+        backend.m_document = &document;
+        auto *testHighlighter = new MarkdownHighlighter(&document);
+        backend.m_highlighter = testHighlighter;
+        testHighlighter->setTheme(true, backend.themeBackground(), backend.themeForeground(),
+                                 backend.themeAccent(), backend.themeCodeBackground(),
+                                 backend.themeCodeForeground(), backend.codeFont());
+        testHighlighter->rehighlight();
+        backend.applyDocumentTypography();
+
+        // Code block paragraph background is Qt::NoBrush (rendered via panel overlay and highlighter)
+        const QTextBlock codeBlock = document.findBlockByNumber(2);
+        QCOMPARE(codeBlock.blockFormat().background().style(), Qt::NoBrush);
+        QCOMPARE(backend.themeCodeBackground(), QStringLiteral("#112233"));
+
+        // Edit document so undo history exists
+        QTextCursor cursor(&document);
+        cursor.setPosition(0);
+        cursor.insertText(QStringLiteral("Edited "));
+        QVERIFY(document.isUndoAvailable());
+
+        // Live update changing code_background
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "code_background = \"#445566\"\n");
+        backend.loadOmarchyTheme();
+
+        // Highlighter and panel get the new color
+        QCOMPARE(backend.themeCodeBackground(), QStringLiteral("#445566"));
+
+        // Paragraph does not paint any old color
+        QCOMPARE(codeBlock.blockFormat().background().style(), Qt::NoBrush);
+
+        // Undo history is preserved
+        QVERIFY(document.isUndoAvailable());
+        document.undo();
+        QCOMPARE(document.toPlainText().startsWith(QStringLiteral("Intro")), true);
 
         backend.m_document = nullptr;
         backend.m_highlighter = nullptr;
