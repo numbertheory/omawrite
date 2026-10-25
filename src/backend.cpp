@@ -486,11 +486,12 @@ void Backend::attachDocument(QObject *textDocument) {
     m_highlighter->setCaret(m_caretPosition);
 
     connect(m_document, &QTextDocument::contentsChange, this,
-            [this](int position, int, int charsAdded) {
+            [this](int position, int charsRemoved, int charsAdded) {
                 if (m_formattingTypography || m_loading)
                     return;
                 m_lastChangePos = position;
                 m_lastChangeAdded = charsAdded;
+                m_lastChangeRemoved = charsRemoved;
             });
 
     connectDocumentLayout();
@@ -1325,8 +1326,88 @@ QString Backend::tomlValue(const QString &text) {
         return value;
     }
 
-    const int close = value.indexOf(quote, 1);
-    return close < 0 ? value : value.mid(1, close - 1);
+    if (quote == QLatin1Char('\'')) {
+        const int close = value.indexOf(quote, 1);
+        return close < 0 ? value : value.mid(1, close - 1);
+    }
+
+    QString decoded;
+    decoded.reserve(value.length());
+    bool closed = false;
+
+    for (int i = 1; i < value.length(); ++i) {
+        const QChar c = value.at(i);
+        if (c == QLatin1Char('"')) {
+            closed = true;
+            break;
+        }
+        if (c == QLatin1Char('\\')) {
+            if (i + 1 >= value.length()) {
+                decoded.append(c);
+                break;
+            }
+            const QChar esc = value.at(++i);
+            switch (esc.unicode()) {
+            case '"':
+                decoded.append(QLatin1Char('"'));
+                break;
+            case '\\':
+                decoded.append(QLatin1Char('\\'));
+                break;
+            case 'b':
+                decoded.append(QChar(0x08));
+                break;
+            case 't':
+                decoded.append(QLatin1Char('\t'));
+                break;
+            case 'n':
+                decoded.append(QLatin1Char('\n'));
+                break;
+            case 'f':
+                decoded.append(QChar(0x0C));
+                break;
+            case 'r':
+                decoded.append(QLatin1Char('\r'));
+                break;
+            case 'u': {
+                if (i + 4 < value.length()) {
+                    bool ok = false;
+                    const char32_t code = value.mid(i + 1, 4).toUInt(&ok, 16);
+                    if (ok) {
+                        decoded.append(QString::fromUcs4(&code, 1));
+                        i += 4;
+                        break;
+                    }
+                }
+                decoded.append(QLatin1Char('\\'));
+                decoded.append(esc);
+                break;
+            }
+            case 'U': {
+                if (i + 8 < value.length()) {
+                    bool ok = false;
+                    const char32_t code = value.mid(i + 1, 8).toUInt(&ok, 16);
+                    if (ok) {
+                        decoded.append(QString::fromUcs4(&code, 1));
+                        i += 8;
+                        break;
+                    }
+                }
+                decoded.append(QLatin1Char('\\'));
+                decoded.append(esc);
+                break;
+            }
+            default:
+                decoded.append(QLatin1Char('\\'));
+                decoded.append(esc);
+                break;
+            }
+        } else {
+            decoded.append(c);
+        }
+    }
+
+    return closed ? decoded : value;
 }
 
 void Backend::loadOmarchyTheme() {
@@ -1802,6 +1883,15 @@ static bool blockFormatMatches(const QTextBlockFormat &actual, const QTextBlockF
     return true;
 }
 
+static bool isCodeBlock(const QTextBlock &block) {
+    if (!block.isValid())
+        return false;
+    if (block.userState() >= MarkdownHighlighter::InsideFence)
+        return true;
+    const QTextBlock prev = block.previous();
+    return prev.isValid() && prev.userState() >= MarkdownHighlighter::InsideFence;
+}
+
 QTextBlockFormat Backend::proseBlockFormat() const {
     QTextBlockFormat format;
     format.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
@@ -1838,7 +1928,7 @@ qreal Backend::codeLineNumberMargin() const {
 
 QVariantList Backend::codeBlockPanels() const {
     QVariantList result;
-    if (!m_document || !m_document->documentLayout())
+    if (!m_document || !m_document->documentLayout() || !m_hasCodeBlocks)
         return result;
 
     m_document->documentLayout()->documentSize();
@@ -1880,7 +1970,7 @@ QVariantList Backend::codeBlockPanels() const {
 
 QVariantList Backend::codeBlockLines() const {
     QVariantList result;
-    if (!m_document || !m_document->documentLayout() || !m_codeLineNumbers)
+    if (!m_document || !m_document->documentLayout() || !m_codeLineNumbers || !m_hasCodeBlocks)
         return result;
 
     m_document->documentLayout()->documentSize();
@@ -1913,7 +2003,7 @@ QVariantList Backend::codeBlockLines() const {
 }
 
 void Backend::refreshCodeBlockOverlays() {
-    if (m_formattingTypography || m_loading)
+    if (m_formattingTypography || m_loading || !m_hasCodeBlocks)
         return;
 
     if (m_codeLineNumbers)
@@ -1931,9 +2021,41 @@ void Backend::connectDocumentLayout() {
     if (auto *layout = m_document->documentLayout()) {
         connect(layout, &QAbstractTextDocumentLayout::documentSizeChanged,
                 this, &Backend::refreshCodeBlockOverlays, Qt::UniqueConnection);
-        connect(layout, &QAbstractTextDocumentLayout::update,
-                this, &Backend::refreshCodeBlockOverlays, Qt::UniqueConnection);
     }
+}
+
+int Backend::countCodeBlocks() const {
+    if (!m_document)
+        return 0;
+    int count = 0;
+    bool inCode = false;
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        if (block.userState() >= MarkdownHighlighter::InsideFence) {
+            if (!inCode) {
+                inCode = true;
+                ++count;
+            }
+        } else if (inCode) {
+            inCode = false;
+        }
+    }
+    return count;
+}
+
+bool Backend::fenceBoundariesChanged() {
+    if (m_highlighter && m_highlighter->fenceBoundariesChanged()) {
+        m_highlighter->resetFenceBoundariesChanged();
+        return true;
+    }
+    if (m_highlighter)
+        m_highlighter->resetFenceBoundariesChanged();
+
+    if (m_hasCodeBlocks && m_lastChangeRemoved >= 3) {
+        if (countCodeBlocks() != m_codeBlockCount)
+            return true;
+    }
+
+    return false;
 }
 
 void Backend::applyDocumentTypography(bool preserveUndo) {
@@ -1948,9 +2070,13 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
 
     bool needed = false;
     bool inCode = false;
+    int codeBlockCount = 0;
+
     for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
         bool isCode = false;
         if (block.userState() >= MarkdownHighlighter::InsideFence) {
+            if (!inCode)
+                ++codeBlockCount;
             isCode = true;
             inCode = true;
         } else if (inCode) {
@@ -1961,14 +2087,23 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
         const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
         if (!blockFormatMatches(block.blockFormat(), target, checkBackground)) {
             needed = true;
-            break;
         }
     }
 
+    if (m_highlighter)
+        m_highlighter->resetFenceBoundariesChanged();
+
+    const bool wasHasCodeBlocks = m_hasCodeBlocks;
+    m_codeBlockCount = codeBlockCount;
+    m_hasCodeBlocks = (codeBlockCount > 0);
+    const bool shouldEmitOverlays = (m_hasCodeBlocks || wasHasCodeBlocks);
+
     if (!needed || (preserveUndo && m_document->isRedoAvailable())) {
-        if (m_codeLineNumbers)
-            emit codeBlockLinesChanged();
-        emit codeBlockPanelsChanged();
+        if (shouldEmitOverlays) {
+            if (m_codeLineNumbers)
+                emit codeBlockLinesChanged();
+            emit codeBlockPanelsChanged();
+        }
         return;
     }
 
@@ -2010,69 +2145,58 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
     if (!preserveUndo)
         m_document->setUndoRedoEnabled(undoEnabled);
 
-    if (m_codeLineNumbers)
-        emit codeBlockLinesChanged();
-    emit codeBlockPanelsChanged();
+    if (shouldEmitOverlays) {
+        if (m_codeLineNumbers)
+            emit codeBlockLinesChanged();
+        emit codeBlockPanelsChanged();
+    }
 }
 
 void Backend::reapplyTypographyToChange() {
     if (!m_document)
         return;
 
+    if (fenceBoundariesChanged()) {
+        applyDocumentTypography(true);
+        return;
+    }
+
+    // Format only the block(s) touched by the last edit instead of the whole
+    // document, and fold the change into the preceding edit command so a single
+    // undo reverts both the text and its formatting.
+    const int maxPos = m_document->characterCount() - 1;
+    const int start = qBound(0, m_lastChangePos, maxPos);
+    const int end = qBound(start, m_lastChangePos + m_lastChangeAdded, maxPos);
+
+    const QTextBlock startBlock = m_document->findBlock(start);
+    const QTextBlock endBlock = m_document->findBlock(end);
+
     const QTextBlockFormat proseFmt = proseBlockFormat();
     const QTextBlockFormat codeFmt = codeBlockFormat();
 
     bool needed = false;
-    bool inCode = false;
-    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
-        bool isCode = false;
-        if (block.userState() >= MarkdownHighlighter::InsideFence) {
-            isCode = true;
-            inCode = true;
-        } else if (inCode) {
-            isCode = true;
-            inCode = false;
-        }
-
-        const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
+    for (QTextBlock block = startBlock;
+         block.isValid() && block.position() <= endBlock.position(); block = block.next()) {
+        const QTextBlockFormat &target = isCodeBlock(block) ? codeFmt : proseFmt;
         if (!blockFormatMatches(block.blockFormat(), target, false)) {
             needed = true;
             break;
         }
     }
-    if (!needed) {
-        if (m_codeLineNumbers)
-            emit codeBlockLinesChanged();
-        emit codeBlockPanelsChanged();
+    if (!needed)
         return;
-    }
 
     m_formattingTypography = true;
     QTextCursor cursor(m_document);
     cursor.joinPreviousEditBlock();
-
-    inCode = false;
-    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
-        bool isCode = false;
-        if (block.userState() >= MarkdownHighlighter::InsideFence) {
-            isCode = true;
-            inCode = true;
-        } else if (inCode) {
-            isCode = true;
-            inCode = false;
-        }
-
-        const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
+    for (QTextBlock block = startBlock;
+         block.isValid() && block.position() <= endBlock.position(); block = block.next()) {
+        const QTextBlockFormat &target = isCodeBlock(block) ? codeFmt : proseFmt;
         if (!blockFormatMatches(block.blockFormat(), target, false)) {
             QTextCursor blockCursor(block);
             blockCursor.setBlockFormat(target);
         }
     }
-
     cursor.endEditBlock();
     m_formattingTypography = false;
-
-    if (m_codeLineNumbers)
-        emit codeBlockLinesChanged();
-    emit codeBlockPanelsChanged();
 }

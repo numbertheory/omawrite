@@ -180,6 +180,8 @@ private:
     QTextBlockFormat proseBlockFormat() const;
     QTextBlockFormat codeBlockFormat() const;
     void connectDocumentLayout();
+    int countCodeBlocks() const;
+    bool fenceBoundariesChanged();
     void applyDocumentTypography(bool preserveUndo = false);
     void reapplyTypographyToChange();
     void scheduleRecovery();
@@ -213,6 +215,9 @@ private:
     bool m_formattingTypography = false;
     int m_lastChangePos = 0;
     int m_lastChangeAdded = 0;
+    int m_lastChangeRemoved = 0;
+    bool m_hasCodeBlocks = false;
+    int m_codeBlockCount = 0;
     QTimer m_wordCountTimer;
     // Counting a large document stalls typing, so counts run on a worker
     // thread. A load outdates the count in flight, and its result is dropped.

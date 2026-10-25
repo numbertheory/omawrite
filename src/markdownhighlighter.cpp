@@ -199,11 +199,19 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
     // closing one, so no markup runs inside it. The state rides from block to
     // block, and Qt rehighlights the rest of the document when it changes.
     const int previous = previousBlockState();
+    const int oldState = currentBlockState();
+    int newState = Prose;
+
     if (previous >= InsideFence) {
         const int fence = previous - InsideFence;
         const bool closing = closesFence(text, fence / 2 + 3,
                                          fence % 2 ? QLatin1Char('~') : QLatin1Char('`'));
-        setCurrentBlockState(closing ? Prose : previous);
+        newState = closing ? Prose : previous;
+        setCurrentBlockState(newState);
+        if ((oldState != -1 && oldState != newState && (oldState >= InsideFence || newState >= InsideFence))
+                || (oldState == -1 && newState >= InsideFence)) {
+            m_fenceBoundariesChanged = true;
+        }
         setFormat(0, text.length(), closing ? m_fenceFormat : m_codeFormat);
         highlightSearch(text);
         return;
@@ -212,12 +220,21 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
     const int opening = openingFenceLength(text);
     if (opening > 0) {
         const bool tildes = text.trimmed().startsWith(QLatin1Char('~'));
-        setCurrentBlockState(InsideFence + (opening - 3) * 2 + (tildes ? 1 : 0));
+        newState = InsideFence + (opening - 3) * 2 + (tildes ? 1 : 0);
+        setCurrentBlockState(newState);
+        if ((oldState != -1 && oldState != newState && (oldState >= InsideFence || newState >= InsideFence))
+                || (oldState == -1 && newState >= InsideFence)) {
+            m_fenceBoundariesChanged = true;
+        }
         setFormat(0, text.length(), m_fenceFormat);
         highlightSearch(text);
         return;
     }
-    setCurrentBlockState(Prose);
+    newState = Prose;
+    setCurrentBlockState(newState);
+    if (oldState != -1 && oldState != newState && (oldState >= InsideFence || newState >= InsideFence)) {
+        m_fenceBoundariesChanged = true;
+    }
 
     if (!text.isEmpty()) {
         highlightMarkers(text);

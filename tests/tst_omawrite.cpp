@@ -1753,6 +1753,24 @@ private slots:
         QCOMPARE(Backend::tomlValue(QStringLiteral("\"#1a1b26")), QStringLiteral("\"#1a1b26"));
         QCOMPARE(Backend::tomlValue(QStringLiteral("\"\"")), QString());
         QCOMPARE(Backend::tomlValue(QString()), QString());
+
+        // Escaped quotes and characters in basic strings
+        QCOMPARE(Backend::tomlValue(QStringLiteral("\"wall\\\"paper.png\"")),
+                 QStringLiteral("wall\"paper.png"));
+        QCOMPARE(Backend::tomlValue(QStringLiteral("\"wall\\\"paper.png\"   # inline comment")),
+                 QStringLiteral("wall\"paper.png"));
+        QCOMPARE(Backend::tomlValue(QStringLiteral("\"path\\\\to\\\\image.png\"")),
+                 QStringLiteral("path\\to\\image.png"));
+        QCOMPARE(Backend::tomlValue(QStringLiteral("\"line1\\nline2\\ttab\"")),
+                 QStringLiteral("line1\nline2\ttab"));
+        QCOMPARE(Backend::tomlValue(QStringLiteral("\"\\u0041\\u0042\"")),
+                 QStringLiteral("AB"));
+
+        // Single-quoted literal strings do not decode escapes
+        QCOMPARE(Backend::tomlValue(QStringLiteral("'wall\\\"paper.png'")),
+                 QStringLiteral("wall\\\"paper.png"));
+        QCOMPARE(Backend::tomlValue(QStringLiteral("'wall\"paper.png'")),
+                 QStringLiteral("wall\"paper.png"));
     }
 
     void keepsDefaultsForColorsItCannotParse() {
@@ -3573,18 +3591,22 @@ private slots:
 
         // An explicit -c/--config path takes precedence over $XDG_CONFIG_HOME.
         const QString customPath = xdgDir.filePath(QStringLiteral("custom.toml"));
+        const QString escapedBgImage = xdgDir.filePath(QStringLiteral("wall\"paper.png"));
+        writeFile(escapedBgImage, "wallpaper-content");
         writeFile(customPath,
                   "mode = \"dark\"\n"
                   "background = \"#223344\"\n"
                   "foreground = \"#ddeeff\"\n"
-                  "accent = \"#55aaff\"\n");
+                  "accent = \"#55aaff\"\n"
+                  "background_image = \"wall\\\"paper.png\"\n");
 
         Backend explicitBackend(customPath);
         QVERIFY(explicitBackend.darkMode());
         QCOMPARE(explicitBackend.themeBackground(), QStringLiteral("#223344"));
         QCOMPARE(explicitBackend.themeForeground(), QStringLiteral("#ddeeff"));
         QCOMPARE(explicitBackend.themeAccent(), QStringLiteral("#55aaff"));
-        QVERIFY(explicitBackend.backgroundImage().isEmpty());
+        QCOMPARE(explicitBackend.backgroundImage(),
+                 QUrl::fromLocalFile(QFileInfo(escapedBgImage).absoluteFilePath()));
 
         // Live edits to the explicit config reload automatically.
         QSignalSpy colorSpy(&explicitBackend, &Backend::themeColorsChanged);
@@ -3890,6 +3912,84 @@ private slots:
         // The code block moved down due to text wrapping, and models refreshed to match
         QVERIFY(wrappedPanelY > initialPanelY);
         QVERIFY(wrappedLine1Y > initialLine1Y);
+
+        backend.m_document = nullptr;
+        backend.m_highlighter = nullptr;
+        delete testHighlighter;
+    }
+
+    void ordinaryEditsDoNotRefreshOverlaysWhileFenceChangesExpandFormatting() {
+        QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString customConfig = scratch.filePath(QStringLiteral("ordinary_edits.toml"));
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "code_line_numbers = true\n");
+
+        Backend backend(customConfig);
+        QTextDocument document;
+        document.setTextWidth(800);
+        document.setPlainText(QStringLiteral(
+            "Intro paragraph.\n"
+            "\n"
+            "```js\n"
+            "const x = 1;\n"
+            "```\n"
+            "\n"
+            "Outro paragraph.\n"));
+
+        backend.m_document = &document;
+        auto *testHighlighter = new MarkdownHighlighter(&document);
+        backend.m_highlighter = testHighlighter;
+        testHighlighter->setTheme(true, backend.themeBackground(), backend.themeForeground(),
+                                 backend.themeAccent(), backend.themeCodeBackground(),
+                                 backend.themeCodeForeground(), backend.codeFont());
+        testHighlighter->rehighlight();
+        backend.applyDocumentTypography();
+
+        QObject::connect(&document, &QTextDocument::contentsChange, &backend,
+                         [&backend](int pos, int removed, int added) {
+                             if (backend.m_formattingTypography || backend.m_loading)
+                                 return;
+                             backend.m_lastChangePos = pos;
+                             backend.m_lastChangeAdded = added;
+                             backend.m_lastChangeRemoved = removed;
+                         });
+
+        QCOMPARE(backend.codeBlockPanels().size(), 1);
+        QCOMPARE(backend.codeBlockLines().size(), 1);
+
+        QSignalSpy panelsSpy(&backend, &Backend::codeBlockPanelsChanged);
+        QSignalSpy linesSpy(&backend, &Backend::codeBlockLinesChanged);
+
+        // 1. Ordinary edit in prose paragraph: overlays must NOT refresh
+        QTextCursor cursor(&document);
+        cursor.setPosition(5);
+        cursor.insertText(QStringLiteral("added "));
+        backend.editorTextChanged();
+
+        QCOMPARE(panelsSpy.count(), 0);
+        QCOMPARE(linesSpy.count(), 0);
+        QCOMPARE(document.firstBlock().blockFormat().lineHeight(), 140.0);
+
+        // 2. Ordinary edit inside code block without touching fences: overlays must NOT refresh
+        const QTextBlock codeLineBlock = document.findBlockByNumber(3);
+        cursor.setPosition(codeLineBlock.position() + 5);
+        cursor.insertText(QStringLiteral("/* note */ "));
+        backend.editorTextChanged();
+
+        QCOMPARE(panelsSpy.count(), 0);
+        QCOMPARE(linesSpy.count(), 0);
+        QCOMPARE(codeLineBlock.blockFormat().lineHeight(), 100.0);
+
+        // 3. Changing fence boundaries by creating a second code block: overlays MUST refresh
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertText(QStringLiteral("\n```\nlet z = 99;\n```\n"));
+        backend.editorTextChanged();
+
+        QVERIFY(panelsSpy.count() > 0);
+        QCOMPARE(backend.codeBlockPanels().size(), 2);
+        QCOMPARE(backend.codeBlockLines().size(), 2);
 
         backend.m_document = nullptr;
         backend.m_highlighter = nullptr;
