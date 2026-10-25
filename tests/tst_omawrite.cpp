@@ -397,6 +397,41 @@ private slots:
         QVERIFY(document->isRedoAvailable());
         QMetaObject::invokeMethod(editor, "redo");
         QCOMPARE(editor->property("text").toString(), QStringLiteral("**hello** world"));
+
+        // Redo history is also preserved when live updates change code-block formatting on a document with code blocks
+        editor->setProperty("text", QStringLiteral(
+            "Prose start\n"
+            "```js\n"
+            "const x = 1;\n"
+            "```\n"
+            "Prose end\n"));
+        QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 0), Q_ARG(int, 5));
+        QMetaObject::invokeMethod(editor, "wrapSelection", Q_ARG(QVariant, QStringLiteral("**")));
+        QVERIFY(editor->property("text").toString().startsWith(QStringLiteral("**Prose**")));
+        QVERIFY(document->isUndoAvailable());
+
+        // Undo leaves redo available
+        QMetaObject::invokeMethod(editor, "undo");
+        QVERIFY(editor->property("text").toString().startsWith(QStringLiteral("Prose")));
+        QVERIFY(document->isRedoAvailable());
+
+        // Live update that changes code-block formatting must preserve redo availability
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "background = \"#112233\"\n"
+                  "foreground = \"#aabbcc\"\n"
+                  "code_background = \"#445566\"\n"
+                  "code_foreground = \"#ff8800\"\n"
+                  "code_font = \"DejaVu Sans Mono\"\n");
+        backend.loadOmarchyTheme();
+        QVERIFY(document->isRedoAvailable());
+
+        // Redo succeeds after the code-block formatting change
+        QMetaObject::invokeMethod(editor, "redo");
+        QVERIFY(editor->property("text").toString().startsWith(QStringLiteral("**Prose**")));
+        QVERIFY(document->isUndoAvailable());
+        QMetaObject::invokeMethod(editor, "undo");
+        QVERIFY(editor->property("text").toString().startsWith(QStringLiteral("Prose")));
     }
 
     void searchFollowsEditsWithoutTakingTheCaret() {

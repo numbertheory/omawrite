@@ -1790,11 +1790,12 @@ void Backend::scheduleWordCount() {
     m_wordCountTimer.start();
 }
 
-static bool blockFormatMatches(const QTextBlockFormat &actual, const QTextBlockFormat &target) {
+static bool blockFormatMatches(const QTextBlockFormat &actual, const QTextBlockFormat &target,
+                               bool checkBackground = false) {
     if (actual.lineHeightType() != target.lineHeightType()
             || !qFuzzyCompare(actual.lineHeight(), target.lineHeight()))
         return false;
-    if (actual.background() != target.background())
+    if (checkBackground && actual.background() != target.background())
         return false;
     if (!qFuzzyCompare(actual.leftMargin(), target.leftMargin()))
         return false;
@@ -1943,6 +1944,7 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
 
     const QTextBlockFormat proseFmt = proseBlockFormat();
     const QTextBlockFormat codeFmt = codeBlockFormat();
+    const bool checkBackground = !preserveUndo;
 
     bool needed = false;
     bool inCode = false;
@@ -1957,13 +1959,13 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
         }
 
         const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
-        if (!blockFormatMatches(block.blockFormat(), target)) {
+        if (!blockFormatMatches(block.blockFormat(), target, checkBackground)) {
             needed = true;
             break;
         }
     }
 
-    if (!needed) {
+    if (!needed || (preserveUndo && m_document->isRedoAvailable())) {
         if (m_codeLineNumbers)
             emit codeBlockLinesChanged();
         emit codeBlockPanelsChanged();
@@ -1994,7 +1996,7 @@ void Backend::applyDocumentTypography(bool preserveUndo) {
         }
 
         const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
-        if (!blockFormatMatches(block.blockFormat(), target)) {
+        if (!blockFormatMatches(block.blockFormat(), target, checkBackground)) {
             QTextCursor cursor(block);
             cursor.setBlockFormat(target);
         }
@@ -2033,7 +2035,7 @@ void Backend::reapplyTypographyToChange() {
         }
 
         const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
-        if (!blockFormatMatches(block.blockFormat(), target)) {
+        if (!blockFormatMatches(block.blockFormat(), target, false)) {
             needed = true;
             break;
         }
@@ -2061,7 +2063,7 @@ void Backend::reapplyTypographyToChange() {
         }
 
         const QTextBlockFormat &target = isCode ? codeFmt : proseFmt;
-        if (!blockFormatMatches(block.blockFormat(), target)) {
+        if (!blockFormatMatches(block.blockFormat(), target, false)) {
             QTextCursor blockCursor(block);
             blockCursor.setBlockFormat(target);
         }
