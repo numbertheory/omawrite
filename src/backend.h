@@ -35,8 +35,12 @@ class Backend : public QObject {
     Q_PROPERTY(QString themeCodeBackground READ themeCodeBackground NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeCodeForeground READ themeCodeForeground NOTIFY themeColorsChanged)
     Q_PROPERTY(bool codeLineNumbers READ codeLineNumbers NOTIFY codeLineNumbersChanged)
-    Q_PROPERTY(qreal codeLineNumberMargin READ codeLineNumberMargin NOTIFY textScaleChanged)
+    Q_PROPERTY(qreal codeLineNumberMargin READ codeLineNumberMargin NOTIFY codeLineNumbersChanged)
     Q_PROPERTY(QVariantList codeBlockLines READ codeBlockLines NOTIFY codeBlockLinesChanged)
+    Q_PROPERTY(QString codeLineNumberFont READ codeLineNumberFont NOTIFY codeLineNumbersChanged)
+    Q_PROPERTY(QString codeLineNumberForeground READ codeLineNumberForeground NOTIFY codeLineNumbersChanged)
+    Q_PROPERTY(QString codeLineNumberBackground READ codeLineNumberBackground NOTIFY codeLineNumbersChanged)
+    Q_PROPERTY(qreal codeLineNumberSize READ codeLineNumberSize NOTIFY codeLineNumbersChanged)
     Q_PROPERTY(QString themeSelectionForeground READ themeSelectionForeground NOTIFY themeColorsChanged)
     Q_PROPERTY(QUrl backgroundImage READ backgroundImage NOTIFY backgroundImageChanged)
     Q_PROPERTY(qreal backgroundOpacity READ backgroundOpacity NOTIFY backgroundImageChanged)
@@ -78,6 +82,16 @@ public:
     bool codeLineNumbers() const { return m_codeLineNumbers; }
     qreal codeLineNumberMargin() const;
     Q_INVOKABLE QVariantList codeBlockLines() const;
+    QString codeLineNumberFont() const {
+        return !m_codeLineNumberFont.isEmpty() ? m_codeLineNumberFont : codeFont();
+    }
+    QString codeLineNumberForeground() const { return m_codeLineNumberForeground; }
+    QString codeLineNumberBackground() const { return m_codeLineNumberBackground; }
+    qreal codeLineNumberSize() const { return m_codeLineNumberSize; }
+    void setCodeLineNumberFont(const QString &family);
+    void setCodeLineNumberForeground(const QString &color);
+    void setCodeLineNumberBackground(const QString &color);
+    void setCodeLineNumberSize(qreal size);
     QString themeSelectionForeground() const { return m_themeSelectionForeground; }
     QUrl backgroundImage() const { return m_backgroundImage; }
     qreal backgroundOpacity() const { return m_backgroundOpacity; }
@@ -232,6 +246,10 @@ private:
     QString m_themeCodeBackground;
     QString m_themeCodeForeground;
     bool m_codeLineNumbers = false;
+    QString m_codeLineNumberFont;
+    QString m_codeLineNumberForeground;
+    QString m_codeLineNumberBackground;
+    qreal m_codeLineNumberSize = 0.0;
     QString m_themeSelectionForeground;
     QUrl m_backgroundImage;
     qreal m_backgroundOpacity = 0.85;

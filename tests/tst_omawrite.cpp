@@ -3555,13 +3555,21 @@ private slots:
                   "code_background = \"#2a3b4c\"\n"
                   "code_foreground = \"#33ff88\"\n"
                   "code_font = \"IBM Plex Mono\"\n"
-                  "code_line_numbers = true\n");
+                  "code_line_numbers = true\n"
+                  "code_line_numbers_font = \"DejaVu Sans Mono\"\n"
+                  "code_line_numbers_foreground = \"#ffaa00\"\n"
+                  "code_line_numbers_background = \"#182028\"\n"
+                  "code_line_numbers_size = 14\n");
 
         Backend backend(customConfig);
         QCOMPARE(backend.themeCodeBackground(), QStringLiteral("#2a3b4c"));
         QCOMPARE(backend.themeCodeForeground(), QStringLiteral("#33ff88"));
         QCOMPARE(backend.codeFont(), QStringLiteral("IBM Plex Mono"));
         QCOMPARE(backend.codeLineNumbers(), true);
+        QCOMPARE(backend.codeLineNumberFont(), QStringLiteral("DejaVu Sans Mono"));
+        QCOMPARE(backend.codeLineNumberForeground(), QStringLiteral("#ffaa00"));
+        QCOMPARE(backend.codeLineNumberBackground(), QStringLiteral("#182028"));
+        QCOMPARE(backend.codeLineNumberSize(), 14.0);
         QVERIFY(backend.codeLineNumberMargin() > 0.0);
 
         QTextDocument document;
@@ -3657,12 +3665,36 @@ private slots:
         backend.applyDocumentTypography();
         QCOMPARE(backend.codeFont(), backend.editorFont());
         QCOMPARE(backend.codeLineNumbers(), false);
+        QCOMPARE(backend.codeLineNumberFont(), backend.editorFont());
+        QCOMPARE(backend.codeLineNumberForeground().isEmpty(), true);
+        QCOMPARE(backend.codeLineNumberBackground().isEmpty(), true);
+        QCOMPARE(backend.codeLineNumberSize(), 0.0);
         QCOMPARE(backend.codeBlockLines().isEmpty(), true);
         for (int i = 2; i <= 6; ++i) {
             const QTextBlock block = document.findBlockByNumber(i);
             QCOMPARE(block.blockFormat().lineHeight(), 100.0);
             QCOMPARE(block.blockFormat().leftMargin(), 0.0);
         }
+
+        // Setting only code_line_numbers_foreground implicitly enables line numbers
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "code_line_numbers_foreground = \"#990000\"\n");
+        backend.loadOmarchyTheme();
+        QCOMPARE(backend.codeLineNumbers(), true);
+        QCOMPARE(backend.codeLineNumberForeground(), QStringLiteral("#990000"));
+        QCOMPARE(backend.codeLineNumberFont(), backend.editorFont());
+        QCOMPARE(backend.codeLineNumberBackground().isEmpty(), true);
+        QCOMPARE(backend.codeLineNumberSize(), 0.0);
+
+        // Setting code_line_numbers = false explicitly overrides implicit enable
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "code_line_numbers = false\n"
+                  "code_line_numbers_size = 16\n");
+        backend.loadOmarchyTheme();
+        QCOMPARE(backend.codeLineNumbers(), false);
+        QCOMPARE(backend.codeLineNumberSize(), 16.0);
 
         backend.m_document = nullptr;
         backend.m_highlighter = nullptr;

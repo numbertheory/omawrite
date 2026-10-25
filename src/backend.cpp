@@ -333,6 +333,10 @@ QString Backend::generateSystemConfigToml(bool systemDarkMode) {
                "code_background = \"%7\"\n"
                "code_foreground = \"%8\"\n"
                "code_line_numbers = false\n"
+               "# code_line_numbers_font = \"\"\n"
+               "# code_line_numbers_foreground = \"\"\n"
+               "# code_line_numbers_background = \"\"\n"
+               "# code_line_numbers_size = 14\n"
                "\n"
                "# background_image = \"\"\n"
                "# background_opacity = 0.85\n"
@@ -424,6 +428,7 @@ void Backend::setDesktopTextScale(qreal textScale) {
 
     m_desktopTextScale = textScale;
     emit textScaleChanged();
+    emit codeLineNumbersChanged();
 }
 
 void Backend::increaseTextSize() {
@@ -460,6 +465,7 @@ void Backend::setTextZoom(qreal zoom) {
     m_textZoom = zoom;
     QSettings().setValue(textZoomSetting, zoom);
     emit textScaleChanged();
+    emit codeLineNumbersChanged();
 }
 
 void Backend::attachDocument(QObject *textDocument) {
@@ -956,6 +962,8 @@ void Backend::setEditorFont(const QString &family) {
         if (m_highlighter)
             m_highlighter->setCodeFont(codeFont());
     }
+    if (m_codeLineNumberFont.isEmpty())
+        emit codeLineNumbersChanged();
 }
 
 void Backend::setCodeFont(const QString &family) {
@@ -964,11 +972,41 @@ void Backend::setCodeFont(const QString &family) {
 
     m_codeFont = family;
     emit codeFontChanged();
+    if (m_codeLineNumberFont.isEmpty())
+        emit codeLineNumbersChanged();
     if (m_highlighter)
         m_highlighter->setCodeFont(codeFont());
     applyDocumentTypography();
     emit codeBlockLinesChanged();
     emit codeBlockPanelsChanged();
+}
+
+void Backend::setCodeLineNumberFont(const QString &family) {
+    if (m_codeLineNumberFont == family)
+        return;
+    m_codeLineNumberFont = family;
+    emit codeLineNumbersChanged();
+}
+
+void Backend::setCodeLineNumberForeground(const QString &color) {
+    if (m_codeLineNumberForeground == color)
+        return;
+    m_codeLineNumberForeground = color;
+    emit codeLineNumbersChanged();
+}
+
+void Backend::setCodeLineNumberBackground(const QString &color) {
+    if (m_codeLineNumberBackground == color)
+        return;
+    m_codeLineNumberBackground = color;
+    emit codeLineNumbersChanged();
+}
+
+void Backend::setCodeLineNumberSize(qreal size) {
+    if (qFuzzyCompare(m_codeLineNumberSize, size))
+        return;
+    m_codeLineNumberSize = size;
+    emit codeLineNumbersChanged();
 }
 
 QStringList Backend::availableFonts() const {
@@ -1309,6 +1347,10 @@ void Backend::loadOmarchyTheme() {
     QString codeBackground;
     QString codeForeground;
     QString codeLineNumbersValue;
+    QString codeLineNumbersFontValue;
+    QString codeLineNumbersForegroundValue;
+    QString codeLineNumbersBackgroundValue;
+    QString codeLineNumbersSizeValue;
     QString backgroundImagePath;
     QString backgroundOpacityValue;
     QString fontValue;
@@ -1355,6 +1397,30 @@ void Backend::loadOmarchyTheme() {
                 codeForeground = value;
             else if (usingCustomConfig && key == QStringLiteral("code_line_numbers"))
                 codeLineNumbersValue = value;
+            else if (usingCustomConfig
+                     && (key == QStringLiteral("code_line_numbers_font")
+                         || key == QStringLiteral("code_line_number_font")))
+                codeLineNumbersFontValue = value;
+            else if (usingCustomConfig
+                     && (key == QStringLiteral("code_line_numbers_foreground")
+                         || key == QStringLiteral("code_line_number_foreground")
+                         || key == QStringLiteral("code_line_numbers_color")
+                         || key == QStringLiteral("code_line_number_color")
+                         || key == QStringLiteral("code_line_numbers_fg")
+                         || key == QStringLiteral("code_line_number_fg")))
+                codeLineNumbersForegroundValue = value;
+            else if (usingCustomConfig
+                     && (key == QStringLiteral("code_line_numbers_background")
+                         || key == QStringLiteral("code_line_number_background")
+                         || key == QStringLiteral("code_line_numbers_bg")
+                         || key == QStringLiteral("code_line_number_bg")))
+                codeLineNumbersBackgroundValue = value;
+            else if (usingCustomConfig
+                     && (key == QStringLiteral("code_line_numbers_size")
+                         || key == QStringLiteral("code_line_number_size")
+                         || key == QStringLiteral("code_line_numbers_font_size")
+                         || key == QStringLiteral("code_line_number_font_size")))
+                codeLineNumbersSizeValue = value;
             else if (usingCustomConfig && key == QStringLiteral("background_image"))
                 backgroundImagePath = value;
             else if (usingCustomConfig && key == QStringLiteral("background_opacity"))
@@ -1376,6 +1442,10 @@ void Backend::loadOmarchyTheme() {
                                      m_themeSelection, m_themeSelectionForeground,
                                      m_themeCodeBackground, m_themeCodeForeground};
     const bool previousCodeLineNumbers = m_codeLineNumbers;
+    const QString previousCodeLineNumberFont = m_codeLineNumberFont;
+    const QString previousCodeLineNumberForeground = m_codeLineNumberForeground;
+    const QString previousCodeLineNumberBackground = m_codeLineNumberBackground;
+    const qreal previousCodeLineNumberSize = m_codeLineNumberSize;
     const QUrl previousBackgroundImage = m_backgroundImage;
     const qreal previousBackgroundOpacity = m_backgroundOpacity;
 
@@ -1430,11 +1500,55 @@ void Backend::loadOmarchyTheme() {
     const QColor chosenCodeFg(codeForeground);
     m_themeCodeForeground = chosenCodeFg.isValid() ? chosenCodeFg.name() : m_themeForeground;
 
+    QString resolvedLineNumberFont;
+    if (usingCustomConfig && !codeLineNumbersFontValue.isEmpty())
+        resolvedLineNumberFont = codeLineNumbersFontValue;
+    m_codeLineNumberFont = resolvedLineNumberFont;
+
+    QString resolvedLineNumberFg;
+    if (usingCustomConfig && !codeLineNumbersForegroundValue.isEmpty()) {
+        const QColor fgColor(codeLineNumbersForegroundValue);
+        if (fgColor.isValid())
+            resolvedLineNumberFg = fgColor.name();
+    }
+    m_codeLineNumberForeground = resolvedLineNumberFg;
+
+    QString resolvedLineNumberBg;
+    if (usingCustomConfig && !codeLineNumbersBackgroundValue.isEmpty()) {
+        if (codeLineNumbersBackgroundValue.trimmed().toLower() == QStringLiteral("transparent")) {
+            resolvedLineNumberBg = QStringLiteral("transparent");
+        } else {
+            const QColor bgColor(codeLineNumbersBackgroundValue);
+            if (bgColor.isValid())
+                resolvedLineNumberBg = bgColor.name();
+        }
+    }
+    m_codeLineNumberBackground = resolvedLineNumberBg;
+
+    qreal resolvedLineNumberSize = 0.0;
+    if (usingCustomConfig && !codeLineNumbersSizeValue.isEmpty()) {
+        QString s = codeLineNumbersSizeValue.trimmed();
+        if (s.endsWith(QLatin1String("px"), Qt::CaseInsensitive))
+            s.chop(2);
+        else if (s.endsWith(QLatin1String("pt"), Qt::CaseInsensitive))
+            s.chop(2);
+        bool ok = false;
+        const qreal sz = s.trimmed().toDouble(&ok);
+        if (ok && sz > 0.0)
+            resolvedLineNumberSize = sz;
+    }
+    m_codeLineNumberSize = resolvedLineNumberSize;
+
     bool resolvedCodeLineNumbers = false;
     if (usingCustomConfig && !codeLineNumbersValue.isEmpty()) {
         const QString lower = codeLineNumbersValue.trimmed().toLower();
         resolvedCodeLineNumbers = (lower == QStringLiteral("true") || lower == QStringLiteral("1")
                                    || lower == QStringLiteral("yes"));
+    } else if (usingCustomConfig && (!resolvedLineNumberFont.isEmpty()
+                                     || !resolvedLineNumberFg.isEmpty()
+                                     || !resolvedLineNumberBg.isEmpty()
+                                     || resolvedLineNumberSize > 0.0)) {
+        resolvedCodeLineNumbers = true;
     }
     m_codeLineNumbers = resolvedCodeLineNumbers;
 
@@ -1516,6 +1630,10 @@ void Backend::loadOmarchyTheme() {
         m_lastConfigFont.clear();
         m_lastConfigCodeFont.clear();
         setCodeFont(QString());
+        m_codeLineNumberFont.clear();
+        m_codeLineNumberForeground.clear();
+        m_codeLineNumberBackground.clear();
+        m_codeLineNumberSize = 0.0;
         m_lastConfigZoom.clear();
     }
 
@@ -1534,7 +1652,12 @@ void Backend::loadOmarchyTheme() {
                              m_themeCodeBackground, m_themeCodeForeground};
     if (colors != previousColors)
         emit themeColorsChanged();
-    if (m_codeLineNumbers != previousCodeLineNumbers)
+    const bool lineNumbersPropsChanged = (m_codeLineNumbers != previousCodeLineNumbers)
+        || (m_codeLineNumberFont != previousCodeLineNumberFont)
+        || (m_codeLineNumberForeground != previousCodeLineNumberForeground)
+        || (m_codeLineNumberBackground != previousCodeLineNumberBackground)
+        || !qFuzzyCompare(m_codeLineNumberSize, previousCodeLineNumberSize);
+    if (lineNumbersPropsChanged)
         emit codeLineNumbersChanged();
     if (m_backgroundImage != previousBackgroundImage
             || !qFuzzyCompare(m_backgroundOpacity, previousBackgroundOpacity)) {
@@ -1697,9 +1820,15 @@ QTextBlockFormat Backend::codeBlockFormat() const {
 }
 
 qreal Backend::codeLineNumberMargin() const {
-    const QFont font = !m_codeFont.isEmpty()
-        ? QFont(m_codeFont)
+    const QString family = codeLineNumberFont();
+    QFont font = !family.isEmpty()
+        ? QFont(family)
         : (m_document ? m_document->defaultFont() : QFont(m_editorFont));
+    if (m_codeLineNumberSize > 0.0) {
+        font.setPixelSize(qRound(m_codeLineNumberSize * m_desktopTextScale * m_textZoom));
+    } else if (font.pixelSize() <= 0) {
+        font.setPixelSize(qRound(20 * m_desktopTextScale * m_textZoom));
+    }
     const QFontMetricsF fm(font);
     const qreal width = fm.horizontalAdvance(QLatin1String("9999"));
     return width > 0.0 ? width : 40.0;

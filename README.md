@@ -31,6 +31,10 @@ selection_foreground = "#cdd6f4"
 code_background = "#313244"
 code_foreground = "#f5e0dc"
 code_line_numbers = false
+# code_line_numbers_font = "IBM Plex Mono"
+# code_line_numbers_foreground = "#909191"
+# code_line_numbers_background = "#2a2b3c"
+# code_line_numbers_size = 14
 
 background_image = "~/Pictures/wallpaper.png"
 background_opacity = 0.85

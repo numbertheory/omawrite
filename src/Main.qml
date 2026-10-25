@@ -1038,19 +1038,37 @@ ApplicationWindow {
                     Repeater {
                         model: backend.codeLineNumbers ? backend.codeBlockLines : []
 
-                        Text {
+                        Item {
+                            objectName: "codeLineNumberItem"
                             x: -width - 12
                             y: modelData.y
-                            width: Math.max(24, backend.codeLineNumberMargin)
+                            width: Math.max(24, backend.codeLineNumberMargin) + (backend.codeLineNumberBackground.length > 0 && backend.codeLineNumberBackground !== "transparent" ? 8 : 0)
                             height: modelData.height
-                            text: modelData.number
-                            color: win.mutedColor
-                            font.family: backend.codeFont
-                            font.pixelSize: editor.font.pixelSize
-                            font.weight: Font.Normal
-                            renderType: editor.renderType
-                            horizontalAlignment: Text.AlignRight
-                            verticalAlignment: Text.AlignTop
+
+                            Rectangle {
+                                objectName: "codeLineNumberBackground"
+                                anchors.fill: parent
+                                color: backend.codeLineNumberBackground
+                                visible: backend.codeLineNumberBackground.length > 0 && backend.codeLineNumberBackground !== "transparent"
+                            }
+
+                            Text {
+                                objectName: "codeLineNumberText"
+                                anchors.fill: parent
+                                anchors.rightMargin: backend.codeLineNumberBackground.length > 0 && backend.codeLineNumberBackground !== "transparent" ? 4 : 0
+                                anchors.leftMargin: backend.codeLineNumberBackground.length > 0 && backend.codeLineNumberBackground !== "transparent" ? 4 : 0
+                                text: modelData.number
+                                color: backend.codeLineNumberForeground.length > 0 ? backend.codeLineNumberForeground : win.mutedColor
+                                font.family: backend.codeLineNumberFont
+                                font.pixelSize: backend.codeLineNumberSize > 0 ? win.scaledSize(backend.codeLineNumberSize) : editor.font.pixelSize
+                                font.weight: Font.Normal
+                                renderType: editor.renderType
+                                horizontalAlignment: Text.AlignRight
+                                verticalAlignment: Text.AlignTop
+                                topPadding: backend.codeLineNumberSize > 0
+                                    ? Math.max(0, Math.round((editor.font.pixelSize - font.pixelSize) * 0.4))
+                                    : 0
+                            }
                         }
                     }
                 }
