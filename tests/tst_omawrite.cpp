@@ -3800,6 +3800,67 @@ private slots:
         }
     }
 
+    void codeBlockOverlaysRefreshWhenTextWrappingChanges() {
+        QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString customConfig = scratch.filePath(QStringLiteral("wrap_test.toml"));
+        writeFile(customConfig,
+                  "mode = \"dark\"\n"
+                  "code_line_numbers = true\n");
+
+        Backend backend(customConfig);
+        QTextDocument document;
+        document.setTextWidth(800);
+        document.setPlainText(QStringLiteral(
+            "This is a long line of intro text that will wrap onto multiple visual lines when document width is small.\n"
+            "\n"
+            "```\n"
+            "const x = 1;\n"
+            "const y = 2;\n"
+            "```\n"));
+
+        backend.m_document = &document;
+        auto *testHighlighter = new MarkdownHighlighter(&document);
+        backend.m_highlighter = testHighlighter;
+        testHighlighter->setTheme(true, backend.themeBackground(), backend.themeForeground(),
+                                 backend.themeAccent(), backend.themeCodeBackground(),
+                                 backend.themeCodeForeground(), backend.codeFont());
+        testHighlighter->rehighlight();
+        backend.applyDocumentTypography();
+
+        const QVariantList initialPanels = backend.codeBlockPanels();
+        const QVariantList initialLines = backend.codeBlockLines();
+        QCOMPARE(initialPanels.size(), 1);
+        QCOMPARE(initialLines.size(), 2);
+        const qreal initialPanelY = initialPanels.at(0).toMap().value(QStringLiteral("y")).toReal();
+        const qreal initialLine1Y = initialLines.at(0).toMap().value(QStringLiteral("y")).toReal();
+
+        // Spy on signals
+        QSignalSpy panelsSpy(&backend, &Backend::codeBlockPanelsChanged);
+        QSignalSpy linesSpy(&backend, &Backend::codeBlockLinesChanged);
+
+        // Narrowing the document causes the intro line to wrap, moving the code block down
+        document.setTextWidth(150);
+
+        QVERIFY(panelsSpy.count() > 0);
+        QVERIFY(linesSpy.count() > 0);
+
+        const QVariantList wrappedPanels = backend.codeBlockPanels();
+        const QVariantList wrappedLines = backend.codeBlockLines();
+        QCOMPARE(wrappedPanels.size(), 1);
+        QCOMPARE(wrappedLines.size(), 2);
+        const qreal wrappedPanelY = wrappedPanels.at(0).toMap().value(QStringLiteral("y")).toReal();
+        const qreal wrappedLine1Y = wrappedLines.at(0).toMap().value(QStringLiteral("y")).toReal();
+
+        // The code block moved down due to text wrapping, and models refreshed to match
+        QVERIFY(wrappedPanelY > initialPanelY);
+        QVERIFY(wrappedLine1Y > initialLine1Y);
+
+        backend.m_document = nullptr;
+        backend.m_highlighter = nullptr;
+        delete testHighlighter;
+    }
+
 private:
     // The character formats the highlighter gives a single line of text.
     static QList<QTextCharFormat> highlightedFormats(const QString &text, int caret = -1) {

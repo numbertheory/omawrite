@@ -998,6 +998,8 @@ ApplicationWindow {
                         win.updateSearch(false);
                 }
 
+                onWidthChanged: backend.refreshCodeBlockOverlays()
+
                 Text {
                     anchors.left: parent.left
                     anchors.top: parent.top

@@ -493,6 +493,7 @@ void Backend::attachDocument(QObject *textDocument) {
                 m_lastChangeAdded = charsAdded;
             });
 
+    connectDocumentLayout();
     applyDocumentTypography(false);
     restoreRecovery();
 }
@@ -1839,6 +1840,8 @@ QVariantList Backend::codeBlockPanels() const {
     if (!m_document || !m_document->documentLayout())
         return result;
 
+    m_document->documentLayout()->documentSize();
+
     bool inCode = false;
     qreal startY = 0;
     qreal endY = 0;
@@ -1879,6 +1882,8 @@ QVariantList Backend::codeBlockLines() const {
     if (!m_document || !m_document->documentLayout() || !m_codeLineNumbers)
         return result;
 
+    m_document->documentLayout()->documentSize();
+
     bool inCode = false;
     int lineNumber = 0;
 
@@ -1906,9 +1911,35 @@ QVariantList Backend::codeBlockLines() const {
     return result;
 }
 
+void Backend::refreshCodeBlockOverlays() {
+    if (m_formattingTypography || m_loading)
+        return;
+
+    if (m_codeLineNumbers)
+        emit codeBlockLinesChanged();
+    emit codeBlockPanelsChanged();
+}
+
+void Backend::connectDocumentLayout() {
+    if (!m_document)
+        return;
+
+    connect(m_document, &QTextDocument::documentLayoutChanged,
+            this, &Backend::connectDocumentLayout, Qt::UniqueConnection);
+
+    if (auto *layout = m_document->documentLayout()) {
+        connect(layout, &QAbstractTextDocumentLayout::documentSizeChanged,
+                this, &Backend::refreshCodeBlockOverlays, Qt::UniqueConnection);
+        connect(layout, &QAbstractTextDocumentLayout::update,
+                this, &Backend::refreshCodeBlockOverlays, Qt::UniqueConnection);
+    }
+}
+
 void Backend::applyDocumentTypography(bool preserveUndo) {
     if (!m_document)
         return;
+
+    connectDocumentLayout();
 
     const QTextBlockFormat proseFmt = proseBlockFormat();
     const QTextBlockFormat codeFmt = codeBlockFormat();

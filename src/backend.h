@@ -140,6 +140,7 @@ public:
     Q_INVOKABLE QVariantMap windowGeometry() const;
     Q_INVOKABLE void saveWindowGeometry(int x, int y, int width, int height, bool maximized);
     Q_INVOKABLE void documentFontChanged();
+    Q_INVOKABLE void refreshCodeBlockOverlays();
 
 signals:
     void fileUrlChanged();
@@ -178,6 +179,7 @@ private:
     void scheduleWordCount();
     QTextBlockFormat proseBlockFormat() const;
     QTextBlockFormat codeBlockFormat() const;
+    void connectDocumentLayout();
     void applyDocumentTypography(bool preserveUndo = false);
     void reapplyTypographyToChange();
     void scheduleRecovery();
